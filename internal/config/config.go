@@ -54,8 +54,9 @@ func (s SelectedModelType) String() string {
 }
 
 const (
-	SelectedModelTypeLarge SelectedModelType = "large"
-	SelectedModelTypeSmall SelectedModelType = "small"
+	SelectedModelTypeLarge   SelectedModelType = "large"
+	SelectedModelTypeSmall   SelectedModelType = "small"
+	SelectedModelTypeSummary SelectedModelType = "summary"
 )
 
 const (
@@ -457,6 +458,16 @@ func (c *Config) LargeModel() *catwalk.Model {
 
 func (c *Config) SmallModel() *catwalk.Model {
 	model, ok := c.Models[SelectedModelTypeSmall]
+	if !ok {
+		return nil
+	}
+	return c.GetModel(model.Provider, model.Model)
+}
+
+// SummaryModel returns the configured summary model, or nil if not set.
+// When nil, callers should fall back to the large model.
+func (c *Config) SummaryModel() *catwalk.Model {
+	model, ok := c.Models[SelectedModelTypeSummary]
 	if !ok {
 		return nil
 	}

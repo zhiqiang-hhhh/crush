@@ -652,6 +652,25 @@ func configureSelectedModels(store *ConfigStore, knownProviders []catwalk.Provid
 	}
 	c.Models[SelectedModelTypeLarge] = large
 	c.Models[SelectedModelTypeSmall] = small
+
+	// Summary model is optional. Only resolve if the user explicitly
+	// configured it; otherwise callers fall back to the large model.
+	if summaryModelSelected, ok := c.Models[SelectedModelTypeSummary]; ok {
+		summary := summaryModelSelected
+		if summary.Model != "" && summary.Provider != "" {
+			if model := c.GetModel(summary.Provider, summary.Model); model != nil {
+				if summary.MaxTokens == 0 {
+					summary.MaxTokens = model.DefaultMaxTokens
+				}
+				c.Models[SelectedModelTypeSummary] = summary
+			} else {
+				delete(c.Models, SelectedModelTypeSummary)
+			}
+		} else {
+			delete(c.Models, SelectedModelTypeSummary)
+		}
+	}
+
 	return nil
 }
 

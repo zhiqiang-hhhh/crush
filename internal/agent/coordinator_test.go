@@ -23,10 +23,11 @@ func (m *mockSessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fan
 	return m.runFunc(ctx, call)
 }
 
-func (m *mockSessionAgent) Model() Model                        { return m.model }
-func (m *mockSessionAgent) SetModels(large, small Model)        {}
-func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool)  {}
-func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string) {}
+func (m *mockSessionAgent) Model() Model                                 { return m.model }
+func (m *mockSessionAgent) SmallModel() Model                            { return m.model }
+func (m *mockSessionAgent) SetModels(large, small Model, summary *Model) {}
+func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool)           {}
+func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string)          {}
 func (m *mockSessionAgent) Cancel(sessionID string) {
 	m.cancelled = append(m.cancelled, sessionID)
 }
@@ -39,6 +40,8 @@ func (m *mockSessionAgent) ClearQueue(sessionID string)                 {}
 func (m *mockSessionAgent) Summarize(context.Context, string, fantasy.ProviderOptions) error {
 	return nil
 }
+
+func (m *mockSessionAgent) SummaryModel() Model { return m.model }
 
 // newTestCoordinator creates a minimal coordinator for unit testing runSubAgent.
 func newTestCoordinator(t *testing.T, env fakeEnv, providerID string, providerCfg config.ProviderConfig) *coordinator {

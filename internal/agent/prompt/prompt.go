@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -93,7 +94,20 @@ func (p *Prompt) Build(ctx context.Context, provider, model string, store *confi
 	return sb.String(), nil
 }
 
+const (
+	maxContextFiles   = 50
+	maxContextFileLen = 100_000
+)
+
 func processFile(filePath string) *ContextFile {
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return nil
+	}
+	if info.Size() > maxContextFileLen {
+		slog.Warn("Skipping oversized context file", "path", filePath, "size", info.Size())
+		return nil
+	}
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil
@@ -120,6 +134,10 @@ func processContextPath(p string, store *config.ConfigStore) []ContextFile {
 				return err
 			}
 			if !d.IsDir() {
+				if len(contexts) >= maxContextFiles {
+					slog.Warn("Context path file limit reached, skipping remaining files", "path", fullPath, "limit", maxContextFiles)
+					return filepath.SkipAll
+				}
 				if result := processFile(path); result != nil {
 					contexts = append(contexts, *result)
 				}

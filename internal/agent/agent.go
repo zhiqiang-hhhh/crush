@@ -101,7 +101,7 @@ type SessionAgentCall struct {
 
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
-	SetModels(large Model, small Model)
+	SetModels(large Model, small Model, summary *Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
 	Cancel(sessionID string)
@@ -113,6 +113,8 @@ type SessionAgent interface {
 	ClearQueue(sessionID string)
 	Summarize(context.Context, string, fantasy.ProviderOptions) error
 	Model() Model
+	SmallModel() Model
+	SummaryModel() Model
 }
 
 type Model struct {
@@ -124,6 +126,8 @@ type Model struct {
 type sessionAgent struct {
 	largeModel         *csync.Value[Model]
 	smallModel         *csync.Value[Model]
+	summaryModel       *Model
+	summaryModelMu     sync.RWMutex
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
@@ -144,6 +148,7 @@ type sessionAgent struct {
 type SessionAgentOptions struct {
 	LargeModel           Model
 	SmallModel           Model
+	SummaryModel         *Model
 	SystemPromptPrefix   string
 	SystemPrompt         string
 	IsSubAgent           bool
@@ -163,6 +168,7 @@ func NewSessionAgent(
 	return &sessionAgent{
 		largeModel:           csync.NewValue(opts.LargeModel),
 		smallModel:           csync.NewValue(opts.SmallModel),
+		summaryModel:         opts.SummaryModel,
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:         csync.NewValue(opts.SystemPrompt),
 		isSubAgent:           opts.IsSubAgent,
@@ -658,7 +664,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	}
 
 	// Copy mutable fields under lock to avoid races with SetModels.
-	largeModel := a.largeModel.Get()
+	summaryModel := a.SummaryModel()
 	systemPromptPrefix := a.systemPromptPrefix.Get()
 
 	currentSession, err := a.sessions.Get(ctx, sessionID)
@@ -685,14 +691,14 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	defer a.activeRequests.Del(sessionID)
 	defer cancel()
 
-	agent := fantasy.NewAgent(largeModel.Model,
+	agent := fantasy.NewAgent(summaryModel.Model,
 		fantasy.WithSystemPrompt(string(summaryPrompt)),
 		fantasy.WithUserAgent(userAgent),
 	)
 	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
-		Model:            largeModel.ModelCfg.Model,
-		Provider:         largeModel.ModelCfg.Provider,
+		Model:            summaryModel.ModelCfg.Model,
+		Provider:         summaryModel.ModelCfg.Provider,
 		IsSummaryMessage: true,
 	})
 	if err != nil {
@@ -763,7 +769,7 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 		}
 	}
 
-	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, openrouterCost)
+	a.updateSessionUsage(summaryModel, &currentSession, resp.TotalUsage, openrouterCost)
 
 	// Just in case, get just the last usage info.
 	usage := resp.Response.Usage
@@ -987,7 +993,11 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 		}
 		if summaryMsgIndex != -1 {
 			msgs = msgs[summaryMsgIndex:]
-			msgs[0].Role = message.User
+			// Copy the summary message before changing its role so we
+			// don't mutate the original slice element.
+			summaryMsg := msgs[0]
+			summaryMsg.Role = message.User
+			msgs[0] = summaryMsg
 		}
 	}
 	return msgs, nil
@@ -1245,9 +1255,24 @@ func (a *sessionAgent) QueuedPromptsList(sessionID string) []string {
 	return prompts
 }
 
-func (a *sessionAgent) SetModels(large Model, small Model) {
+func (a *sessionAgent) SetModels(large Model, small Model, summary *Model) {
 	a.largeModel.Set(large)
 	a.smallModel.Set(small)
+	a.summaryModelMu.Lock()
+	a.summaryModel = summary
+	a.summaryModelMu.Unlock()
+}
+
+// SummaryModel returns the summary model if configured, otherwise falls back
+// to the large model.
+func (a *sessionAgent) SummaryModel() Model {
+	a.summaryModelMu.RLock()
+	m := a.summaryModel
+	a.summaryModelMu.RUnlock()
+	if m != nil {
+		return *m
+	}
+	return a.largeModel.Get()
 }
 
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
@@ -1260,6 +1285,10 @@ func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
 
 func (a *sessionAgent) Model() Model {
 	return a.largeModel.Get()
+}
+
+func (a *sessionAgent) SmallModel() Model {
+	return a.smallModel.Get()
 }
 
 // convertToToolResult converts a fantasy tool result to a message tool result.
@@ -1547,9 +1576,8 @@ func serializeTranscript(msgs []message.Message) string {
 					sb.WriteString("**Status:** Success\n")
 				}
 				content := tr.Content
-				const maxToolResultLen = 10000
-				if len(content) > maxToolResultLen {
-					trunc := maxToolResultLen
+				if len(content) > maxToolResultSize {
+					trunc := maxToolResultSize
 					for trunc > 0 && !utf8.RuneStart(content[trunc]) {
 						trunc--
 					}
@@ -1597,6 +1625,11 @@ func (a *sessionAgent) saveTranscript(ctx context.Context, sessionID string) err
 // TranscriptPath returns the path where a session's transcript would be saved.
 func TranscriptPath(dataDir string, sessionID string) string {
 	return filepath.Join(dataDir, "transcripts", sessionID+".md")
+}
+
+// KeyFactsPath returns the path where a session's key facts would be saved.
+func KeyFactsPath(dataDir string, sessionID string) string {
+	return filepath.Join(dataDir, "transcripts", sessionID+".facts")
 }
 
 var keyFactsRegex = regexp.MustCompile(`(?s)<key_facts>(.*?)</key_facts>`)

@@ -5,8 +5,11 @@ import (
 	"fmt"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/crush/internal/agent"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/logo"
+	"github.com/charmbracelet/crush/internal/ui/styles"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
 )
@@ -48,7 +51,33 @@ func (m *UI) modelInfo(width int) string {
 			ModelContext: model.CatwalkCfg.ContextWindow,
 		}
 	}
-	return common.ModelInfo(m.com.Styles, model.CatwalkCfg.Name, providerName, reasoningInfo, modelContext, width)
+
+	parts := []string{
+		common.ModelInfo(m.com.Styles, model.CatwalkCfg.Name, providerName, reasoningInfo, modelContext, width),
+	}
+
+	t := m.com.Styles
+	if coord := m.com.App.AgentCoordinator; coord != nil {
+		smallModel := coord.SmallModel()
+		parts = append(parts, m.compactModelLine(t, "Small", smallModel, width))
+
+		if _, ok := m.com.Config().Models[config.SelectedModelTypeSummary]; ok {
+			summaryModel := coord.SummaryModel()
+			parts = append(parts, m.compactModelLine(t, "Summary", summaryModel, width))
+		}
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// compactModelLine renders a single compact model info line with a label.
+func (m *UI) compactModelLine(t *styles.Styles, label string, model agent.Model, width int) string {
+	icon := t.Subtle.Render(styles.ModelIcon)
+	name := t.Base.Render(model.CatwalkCfg.Name)
+	tag := t.Muted.Render(fmt.Sprintf("[%s]", label))
+	return lipgloss.NewStyle().Width(width).Render(
+		fmt.Sprintf("%s %s %s", icon, name, tag),
+	)
 }
 
 // getDynamicHeightLimits will give us the num of items to show in each section based on the hight

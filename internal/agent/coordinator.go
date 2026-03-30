@@ -71,6 +71,8 @@ type Coordinator interface {
 	ClearQueue(sessionID string)
 	Summarize(context.Context, string) error
 	Model() Model
+	SmallModel() Model
+	SummaryModel() Model
 	UpdateModels(ctx context.Context) error
 }
 
@@ -133,7 +135,35 @@ func NewCoordinator(
 	}
 	c.currentAgent = agent
 	c.agents[config.AgentCoder] = agent
+
+	// Clean up transcript and key facts files when sessions are deleted.
+	go c.watchSessionDeletes(ctx)
+
 	return c, nil
+}
+
+// watchSessionDeletes subscribes to session delete events and removes
+// associated transcript and key facts files.
+func (c *coordinator) watchSessionDeletes(ctx context.Context) {
+	ch := c.sessions.Subscribe(ctx)
+	dataDir := c.cfg.Config().Options.DataDirectory
+	if dataDir == "" {
+		return
+	}
+	for event := range ch {
+		if event.Type != pubsub.DeletedEvent {
+			continue
+		}
+		sid := event.Payload.ID
+		for _, p := range []string{
+			TranscriptPath(dataDir, sid),
+			KeyFactsPath(dataDir, sid),
+		} {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				slog.Warn("Failed to remove session file", "path", p, "error", err)
+			}
+		}
+	}
 }
 
 // Run implements Coordinator.
@@ -396,10 +426,19 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		return nil, err
 	}
 
+	var summaryModel *Model
+	if !isSubAgent {
+		summaryModel, err = c.buildSummaryModel(ctx)
+		if err != nil {
+			slog.Warn("Failed to build summary model, falling back to large", "error", err)
+		}
+	}
+
 	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
 		LargeModel:           large,
 		SmallModel:           small,
+		SummaryModel:         summaryModel,
 		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
 		SystemPrompt:         "",
 		IsSubAgent:           isSubAgent,
@@ -620,6 +659,52 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 			CatwalkCfg: *smallCatwalkModel,
 			ModelCfg:   smallModelCfg,
 		}, nil
+}
+
+// buildSummaryModel builds the optional summary model. Returns nil if no
+// summary model is configured, in which case the caller should fall back to
+// the large model.
+func (c *coordinator) buildSummaryModel(ctx context.Context) (*Model, error) {
+	summaryCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeSummary]
+	if !ok {
+		return nil, nil
+	}
+
+	providerCfg, ok := c.cfg.Config().Providers.Get(summaryCfg.Provider)
+	if !ok {
+		return nil, nil
+	}
+
+	provider, err := c.buildProvider(providerCfg, summaryCfg, false)
+	if err != nil {
+		return nil, err
+	}
+
+	var cwModel *catwalk.Model
+	for _, m := range providerCfg.Models {
+		if m.ID == summaryCfg.Model {
+			cwModel = &m
+		}
+	}
+	if cwModel == nil {
+		return nil, nil
+	}
+
+	modelID := summaryCfg.Model
+	if summaryCfg.Provider == openrouter.Name && isExactoSupported(modelID) {
+		modelID += ":exacto"
+	}
+
+	lm, err := provider.LanguageModel(ctx, modelID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Model{
+		Model:      lm,
+		CatwalkCfg: *cwModel,
+		ModelCfg:   summaryCfg,
+	}, nil
 }
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
@@ -909,13 +994,28 @@ func (c *coordinator) Model() Model {
 	return c.currentAgent.Model()
 }
 
+func (c *coordinator) SmallModel() Model {
+	return c.currentAgent.SmallModel()
+}
+
+func (c *coordinator) SummaryModel() Model {
+	return c.currentAgent.SummaryModel()
+}
+
 func (c *coordinator) UpdateModels(ctx context.Context) error {
 	// build the models again so we make sure we get the latest config
 	large, small, err := c.buildAgentModels(ctx, false)
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetModels(large, small)
+
+	var summaryModel *Model
+	summaryModel, err = c.buildSummaryModel(ctx)
+	if err != nil {
+		slog.Warn("Failed to build summary model, falling back to large", "error", err)
+	}
+
+	c.currentAgent.SetModels(large, small, summaryModel)
 
 	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
 	if !ok {
@@ -939,11 +1039,12 @@ func (c *coordinator) QueuedPromptsList(sessionID string) []string {
 }
 
 func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
-	providerCfg, ok := c.cfg.Config().Providers.Get(c.currentAgent.Model().ModelCfg.Provider)
+	summaryModel := c.currentAgent.SummaryModel()
+	providerCfg, ok := c.cfg.Config().Providers.Get(summaryModel.ModelCfg.Provider)
 	if !ok {
 		return errModelProviderNotConfigured
 	}
-	return c.currentAgent.Summarize(ctx, sessionID, getProviderOptions(c.currentAgent.Model(), providerCfg))
+	return c.currentAgent.Summarize(ctx, sessionID, getProviderOptions(summaryModel, providerCfg))
 }
 
 func (c *coordinator) isUnauthorized(err error) bool {
