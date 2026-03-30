@@ -458,31 +458,31 @@ func (m *Chat) SelectNext() {
 }
 
 // SelectPrevUserMessage selects the previous user message in the chat list.
-func (m *Chat) SelectPrevUserMessage() {
+func (m *Chat) SelectPrevUserMessage() bool {
 	cur := m.list.Selected()
 	for {
 		if !m.list.SelectPrev() {
 			m.list.SetSelected(cur)
-			return
+			return false
 		}
 		item := m.list.ItemAt(m.list.Selected())
 		if _, ok := item.(*chat.UserMessageItem); ok {
-			return
+			return true
 		}
 	}
 }
 
 // SelectNextUserMessage selects the next user message in the chat list.
-func (m *Chat) SelectNextUserMessage() {
+func (m *Chat) SelectNextUserMessage() bool {
 	cur := m.list.Selected()
 	for {
 		if !m.list.SelectNext() {
 			m.list.SetSelected(cur)
-			return
+			return false
 		}
 		item := m.list.ItemAt(m.list.Selected())
 		if _, ok := item.(*chat.UserMessageItem); ok {
-			return
+			return true
 		}
 	}
 }

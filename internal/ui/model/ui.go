@@ -1854,8 +1854,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 
 				m.randomizePlaceholders()
 				m.historyReset()
+				if value != "" {
+					m.promptHistory.messages = append([]string{value}, m.promptHistory.messages...)
+				}
 
-				return tea.Batch(m.sendMessage(value, attachments...), m.loadPromptHistory())
+				return m.sendMessage(value, attachments...)
 			case key.Matches(msg, m.keyMap.Chat.NewSession):
 				if !m.hasSession() {
 					break
@@ -1896,14 +1899,21 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 			case key.Matches(msg, m.keyMap.Editor.PrevUserMessage):
-				m.chat.SelectPrevUserMessage()
-				m.chat.ScrollToSelected()
+				if m.chat.SelectPrevUserMessage() {
+					m.chat.ScrollToSelected()
+				} else {
+					m.chat.ScrollToTop()
+				}
 				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 			case key.Matches(msg, m.keyMap.Editor.NextUserMessage):
-				m.chat.SelectNextUserMessage()
-				m.chat.ScrollToSelected()
+				if !m.chat.SelectNextUserMessage() {
+					m.chat.ScrollToBottom()
+					m.chat.SelectLast()
+				} else {
+					m.chat.ScrollToSelected()
+				}
 			case key.Matches(msg, m.keyMap.Editor.ScrollToEnd):
 				m.chat.ScrollToBottom()
 				m.chat.SelectLast()
