@@ -89,6 +89,20 @@ func (m *Attachments) HandleClick(x int) bool {
 	return false
 }
 
+// AttachmentAt returns the attachment at the given x coordinate, or nil if
+// no attachment occupies that position.
+func (m *Attachments) AttachmentAt(x int) *message.Attachment {
+	offset := 0
+	for i, att := range m.list {
+		w := m.renderer.chipWidth(att)
+		if x >= offset && x < offset+w {
+			return &m.list[i]
+		}
+		offset += w
+	}
+	return nil
+}
+
 func (m *Attachments) Render(width int) string {
 	return m.renderer.Render(m.list, m.deleting, width)
 }

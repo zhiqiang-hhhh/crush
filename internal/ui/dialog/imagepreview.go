@@ -95,6 +95,9 @@ func (d *ImagePreview) HandleMsg(msg tea.Msg) Action {
 	case fimage.TransmittedMsg:
 		d.previewingImage = true
 		d.transmitting = false
+		return ActionCmd{}
+	case imagePreviewReadyMsg:
+		// Keep ticking until the image is fully transmitted and visible.
 	}
 
 	if d.decodedImg != nil && d.imgPrevWidth > 0 && d.imgPrevHeight > 0 && !d.previewingImage && !d.transmitting {
@@ -110,6 +113,12 @@ func (d *ImagePreview) HandleMsg(msg tea.Msg) Action {
 				},
 			))
 		}
+	}
+
+	if !d.previewingImage {
+		cmds = append(cmds, tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
+			return imagePreviewReadyMsg{}
+		}))
 	}
 
 	if len(cmds) > 0 {
