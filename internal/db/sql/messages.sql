@@ -7,7 +7,7 @@ WHERE id = ? LIMIT 1;
 SELECT *
 FROM messages
 WHERE session_id = ?
-ORDER BY created_at ASC;
+ORDER BY created_at ASC, rowid ASC;
 
 -- name: CreateMessage :one
 INSERT INTO messages (
@@ -58,12 +58,12 @@ ORDER BY created_at DESC;
 SELECT *
 FROM messages
 WHERE session_id = ?
-ORDER BY created_at DESC
+ORDER BY created_at DESC, rowid DESC
 LIMIT ?;
 
 -- name: ListMessagesBySessionBefore :many
 SELECT *
 FROM messages
-WHERE session_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
-ORDER BY created_at DESC, id DESC
+WHERE session_id = ? AND (created_at < ? OR (created_at = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)))
+ORDER BY created_at DESC, rowid DESC
 LIMIT ?;
