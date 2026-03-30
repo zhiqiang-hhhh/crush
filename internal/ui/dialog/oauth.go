@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/exp/charmtone"
 	"github.com/pkg/browser"
 )
 
@@ -227,14 +228,14 @@ func (m *OAuth) headerContent() string {
 	if m.isOnboarding {
 		return textStyle.Render(dialogTitle)
 	}
-	return common.DialogTitle(t, titleStyle.Render(dialogTitle), m.width-headerOffset, t.Primary, t.Secondary)
+	return common.DialogTitle(t, titleStyle.Render(dialogTitle), m.width-headerOffset, charmtone.Yam, charmtone.Cumin)
 }
 
 func (m *OAuth) innerDialogContent() string {
 	var (
 		t            = m.com.Styles
 		whiteStyle   = lipgloss.NewStyle().Foreground(t.White)
-		primaryStyle = lipgloss.NewStyle().Foreground(t.Primary)
+		primaryStyle = lipgloss.NewStyle().Foreground(charmtone.Yam)
 		greenStyle   = lipgloss.NewStyle().Foreground(t.GreenLight)
 		linkStyle    = lipgloss.NewStyle().Foreground(t.GreenDark).Underline(true)
 		errorStyle   = lipgloss.NewStyle().Foreground(t.Error)
@@ -351,7 +352,7 @@ func (d *OAuth) copyCode() tea.Cmd {
 		return nil
 	}
 	return tea.Sequence(
-		tea.SetClipboard(d.userCode),
+		common.SetClipboardOSC52(d.userCode),
 		util.ReportInfo("Code copied to clipboard"),
 	)
 }
@@ -361,7 +362,7 @@ func (d *OAuth) copyCodeAndOpenURL() tea.Cmd {
 		return nil
 	}
 	return tea.Sequence(
-		tea.SetClipboard(d.userCode),
+		common.SetClipboardOSC52(d.userCode),
 		func() tea.Msg {
 			if err := browser.OpenURL(d.verificationURL); err != nil {
 				return ActionOAuthErrored{fmt.Errorf("failed to open browser: %w", err)}

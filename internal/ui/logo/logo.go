@@ -115,6 +115,25 @@ func Render(s *styles.Styles, version string, compact bool, o Opts) string {
 	return logo
 }
 
+// LandingRender renders a clean, centered Crush logo for the landing page.
+// No flanking diagonal fields, no meta row — just the gradient block letters.
+func LandingRender(t *styles.Styles, colorA, colorB color.Color) string {
+	const spacing = 1
+	letterforms := []letterform{
+		letterC,
+		letterR,
+		letterU,
+		letterSStylized,
+		letterH,
+	}
+	crush := renderWord(spacing, -1, letterforms...)
+	b := new(strings.Builder)
+	for r := range strings.SplitSeq(crush, "\n") {
+		fmt.Fprintln(b, styles.ApplyBoldForegroundGrad(t, r, colorA, colorB))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // SmallRender renders a smaller version of the Crush logo, suitable for
 // smaller windows or sidebar usage.
 func SmallRender(t *styles.Styles, width int) string {

@@ -59,7 +59,6 @@ func (m *Attachments) Update(msg tea.Msg) bool {
 			m.list = nil
 			return true
 		case m.deleting:
-			// Handle digit keys for individual attachment deletion.
 			r := msg.Code
 			if r >= '0' && r <= '9' {
 				num := int(r - '0')
@@ -70,6 +69,22 @@ func (m *Attachments) Update(msg tea.Msg) bool {
 			}
 			return true
 		}
+	}
+	return false
+}
+
+func (m *Attachments) HandleClick(x int) bool {
+	if len(m.list) == 0 {
+		return false
+	}
+	offset := 0
+	for i, att := range m.list {
+		iconWidth := lipgloss.Width(m.renderer.icon(att).String())
+		if x >= offset && x < offset+iconWidth {
+			m.list = slices.Delete(m.list, i, i+1)
+			return true
+		}
+		offset += m.renderer.chipWidth(att)
 	}
 	return false
 }
@@ -132,4 +147,12 @@ func (r *Renderer) icon(a message.Attachment) lipgloss.Style {
 		return r.imageStyle
 	}
 	return r.textStyle
+}
+
+func (r *Renderer) chipWidth(att message.Attachment) int {
+	filename := filepath.Base(att.FileName)
+	if ansi.StringWidth(filename) > maxFilename {
+		filename = ansi.Truncate(filename, maxFilename, "…")
+	}
+	return lipgloss.Width(r.icon(att).String()) + lipgloss.Width(r.normalStyle.Render(filename))
 }

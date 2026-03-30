@@ -33,6 +33,15 @@ type List struct {
 
 	// renderCallbacks is a list of callbacks to apply when rendering items.
 	renderCallbacks []func(idx, selectedIdx int, item Item) Item
+
+	// heightCache caches the rendered height per item index. A value of -1
+	// means the entry is invalid and must be recomputed.
+	heightCache []int
+	// heightCacheWidth is the width the height cache was computed at.
+	heightCacheWidth int
+	// totalHeightCache caches the total content height (all item heights
+	// plus gaps). A value of -1 means invalid.
+	totalHeightCache int
 }
 
 // renderedItem holds the rendered content and height of an item.
@@ -46,6 +55,7 @@ func NewList(items ...Item) *List {
 	l := new(List)
 	l.items = items
 	l.selectedIdx = -1
+	l.totalHeightCache = -1
 	return l
 }
 
@@ -61,18 +71,79 @@ func (l *List) RegisterRenderCallback(cb RenderCallback) {
 
 // SetSize sets the size of the list viewport.
 func (l *List) SetSize(width, height int) {
+	if l.width != width {
+		l.invalidateHeightCache()
+	}
 	l.width = width
 	l.height = height
 }
 
 // SetGap sets the gap between items.
 func (l *List) SetGap(gap int) {
+	if l.gap != gap {
+		l.totalHeightCache = -1
+	}
 	l.gap = gap
 }
 
 // Gap returns the gap between items.
 func (l *List) Gap() int {
 	return l.gap
+}
+
+// invalidateHeightCache resets all cached heights.
+func (l *List) invalidateHeightCache() {
+	l.heightCache = nil
+	l.heightCacheWidth = 0
+	l.totalHeightCache = -1
+}
+
+// InvalidateItemHeight invalidates the cached height for a single item and
+// the total height cache. Call this when an item's content has changed.
+func (l *List) InvalidateItemHeight(idx int) {
+	if idx >= 0 && idx < len(l.heightCache) {
+		l.heightCache[idx] = -1
+	}
+	l.totalHeightCache = -1
+}
+
+// ensureHeightCache allocates the height cache slice if needed and
+// validates it matches the current width and item count.
+func (l *List) ensureHeightCache() {
+	if l.heightCacheWidth != l.width || len(l.heightCache) != len(l.items) {
+		l.heightCache = make([]int, len(l.items))
+		for i := range l.heightCache {
+			l.heightCache[i] = -1
+		}
+		l.heightCacheWidth = l.width
+		l.totalHeightCache = -1
+	}
+}
+
+// getItemHeight returns the cached height for the item at idx, computing
+// and caching it if necessary.
+func (l *List) getItemHeight(idx int) int {
+	if idx < 0 || idx >= len(l.items) {
+		return 0
+	}
+
+	l.ensureHeightCache()
+
+	if l.heightCache[idx] >= 0 {
+		return l.heightCache[idx]
+	}
+
+	item := l.items[idx]
+	for _, cb := range l.renderCallbacks {
+		if it := cb(idx, l.selectedIdx, item); it != nil {
+			item = it
+		}
+	}
+	rendered := item.Render(l.width)
+	rendered = strings.TrimRight(rendered, "\n")
+	h := strings.Count(rendered, "\n") + 1
+	l.heightCache[idx] = h
+	return h
 }
 
 // AtBottom returns whether the list is showing the last item at the bottom.
@@ -85,11 +156,9 @@ func (l *List) AtBottom() bool {
 	var totalHeight int
 	for idx := l.offsetIdx; idx < len(l.items); idx++ {
 		if totalHeight > l.height {
-			// No need to calculate further, we're already past the viewport height
 			return false
 		}
-		item := l.getItem(idx)
-		itemHeight := item.height
+		itemHeight := l.getItemHeight(idx)
 		if l.gap > 0 && idx > l.offsetIdx {
 			itemHeight += l.gap
 		}
@@ -97,6 +166,69 @@ func (l *List) AtBottom() bool {
 	}
 
 	return totalHeight-l.offsetLine <= l.height
+}
+
+// NearBottom returns whether the list is within the given number of lines
+// from the bottom. This is useful for re-engaging follow mode when the user
+// scrolls close to the bottom during streaming.
+func (l *List) NearBottom(threshold int) bool {
+	if len(l.items) == 0 {
+		return true
+	}
+
+	var totalHeight int
+	for idx := l.offsetIdx; idx < len(l.items); idx++ {
+		if totalHeight > l.height+threshold {
+			return false
+		}
+		itemHeight := l.getItemHeight(idx)
+		if l.gap > 0 && idx > l.offsetIdx {
+			itemHeight += l.gap
+		}
+		totalHeight += itemHeight
+	}
+
+	return totalHeight-l.offsetLine <= l.height+threshold
+}
+
+// ScrollInfo returns the total content height in lines and the current scroll
+// offset from the top. These values are suitable for rendering a scrollbar.
+func (l *List) ScrollInfo() (totalHeight, offset int) {
+	if len(l.items) == 0 {
+		return 0, 0
+	}
+
+	totalHeight = l.computeTotalHeight()
+
+	// Compute offset: sum heights of all items before offsetIdx, plus
+	// offsetLine within the current item, plus gaps.
+	for idx := range l.offsetIdx {
+		offset += l.getItemHeight(idx)
+		if l.gap > 0 {
+			offset += l.gap
+		}
+	}
+	offset += l.offsetLine
+
+	return totalHeight, offset
+}
+
+// computeTotalHeight returns the total content height, using the cache when
+// available.
+func (l *List) computeTotalHeight() int {
+	if l.totalHeightCache >= 0 {
+		return l.totalHeightCache
+	}
+
+	var total int
+	for idx := range l.items {
+		total += l.getItemHeight(idx)
+		if l.gap > 0 && idx < len(l.items)-1 {
+			total += l.gap
+		}
+	}
+	l.totalHeightCache = total
+	return total
 }
 
 // SetReverse shows the list in reverse order.
@@ -125,8 +257,7 @@ func (l *List) lastOffsetItem() (int, int, int) {
 	var totalHeight int
 	var idx int
 	for idx = len(l.items) - 1; idx >= 0; idx-- {
-		item := l.getItem(idx)
-		itemHeight := item.height
+		itemHeight := l.getItemHeight(idx)
 		if l.gap > 0 && idx < len(l.items)-1 {
 			itemHeight += l.gap
 		}
@@ -136,7 +267,7 @@ func (l *List) lastOffsetItem() (int, int, int) {
 		}
 	}
 
-	// Calculate line offset within the item
+	// Calculate line offset within the item.
 	lineOffset := max(totalHeight-l.height, 0)
 	idx = max(idx, 0)
 
@@ -166,6 +297,12 @@ func (l *List) getItem(idx int) renderedItem {
 		height:  height,
 	}
 
+	// Update height cache as a side effect.
+	l.ensureHeightCache()
+	if idx < len(l.heightCache) {
+		l.heightCache[idx] = height
+	}
+
 	return ri
 }
 
@@ -193,48 +330,42 @@ func (l *List) ScrollBy(lines int) {
 
 	if lines > 0 {
 		if l.AtBottom() {
-			// Already at bottom
 			return
 		}
 
-		// Scroll down
+		// Scroll down.
 		l.offsetLine += lines
-		currentItem := l.getItem(l.offsetIdx)
-		for l.offsetLine >= currentItem.height {
-			l.offsetLine -= currentItem.height
+		currentHeight := l.getItemHeight(l.offsetIdx)
+		for l.offsetLine >= currentHeight {
+			l.offsetLine -= currentHeight
 			if l.gap > 0 {
 				l.offsetLine = max(0, l.offsetLine-l.gap)
 			}
 
-			// Move to next item
 			l.offsetIdx++
 			if l.offsetIdx > len(l.items)-1 {
-				// Reached bottom
 				l.ScrollToBottom()
 				return
 			}
-			currentItem = l.getItem(l.offsetIdx)
+			currentHeight = l.getItemHeight(l.offsetIdx)
 		}
 
 		lastOffsetIdx, lastOffsetLine, _ := l.lastOffsetItem()
 		if l.offsetIdx > lastOffsetIdx || (l.offsetIdx == lastOffsetIdx && l.offsetLine > lastOffsetLine) {
-			// Clamp to bottom
 			l.offsetIdx = lastOffsetIdx
 			l.offsetLine = lastOffsetLine
 		}
 	} else if lines < 0 {
-		// Scroll up
+		// Scroll up.
 		l.offsetLine += lines // lines is negative
 		for l.offsetLine < 0 {
-			// Move to previous item
 			l.offsetIdx--
 			if l.offsetIdx < 0 {
-				// Reached top
 				l.ScrollToTop()
 				break
 			}
-			prevItem := l.getItem(l.offsetIdx)
-			totalHeight := prevItem.height
+			prevHeight := l.getItemHeight(l.offsetIdx)
+			totalHeight := prevHeight
 			if l.gap > 0 {
 				totalHeight += l.gap
 			}
@@ -255,8 +386,7 @@ func (l *List) VisibleItemIndices() (startIdx, endIdx int) {
 	visibleHeight := -l.offsetLine
 
 	for currentIdx < len(l.items) {
-		item := l.getItem(currentIdx)
-		visibleHeight += item.height
+		visibleHeight += l.getItemHeight(currentIdx)
 		if l.gap > 0 {
 			visibleHeight += l.gap
 		}
@@ -293,18 +423,14 @@ func (l *List) Render() string {
 		itemHeight := len(itemLines)
 
 		if currentOffset >= 0 && currentOffset < itemHeight {
-			// Add visible content lines
 			lines = append(lines, itemLines[currentOffset:]...)
 
-			// Add gap if this is not the absolute last visual element (conceptually gaps are between items)
-			// But in the loop we can just add it and trim later
 			if l.gap > 0 {
 				for i := 0; i < l.gap; i++ {
 					lines = append(lines, "")
 				}
 			}
 		} else {
-			// offsetLine starts in the gap
 			gapOffset := currentOffset - itemHeight
 			gapRemaining := l.gap - gapOffset
 			if gapRemaining > 0 {
@@ -316,7 +442,7 @@ func (l *List) Render() string {
 
 		linesNeeded = l.height - len(lines)
 		currentIdx++
-		currentOffset = 0 // Reset offset for subsequent items
+		currentOffset = 0
 	}
 
 	l.height = max(l.height, 0)
@@ -326,7 +452,6 @@ func (l *List) Render() string {
 	}
 
 	if l.reverse {
-		// Reverse the lines so the list renders bottom-to-top.
 		for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
 			lines[i], lines[j] = lines[j], lines[i]
 		}
@@ -346,6 +471,8 @@ func (l *List) PrependItems(items ...Item) {
 	if l.selectedIdx != -1 {
 		l.selectedIdx += len(items)
 	}
+
+	l.invalidateHeightCache()
 }
 
 // SetItems sets the items in the list.
@@ -360,11 +487,15 @@ func (l *List) setItems(evict bool, items ...Item) {
 	l.selectedIdx = min(l.selectedIdx, len(l.items)-1)
 	l.offsetIdx = min(l.offsetIdx, len(l.items)-1)
 	l.offsetLine = 0
+	if evict {
+		l.invalidateHeightCache()
+	}
 }
 
 // AppendItems appends items to the list.
 func (l *List) AppendItems(items ...Item) {
 	l.items = append(l.items, items...)
+	l.totalHeightCache = -1
 }
 
 // RemoveItem removes the item at the given index from the list.
@@ -390,6 +521,8 @@ func (l *List) RemoveItem(idx int) {
 		l.offsetIdx = max(0, len(l.items)-1)
 		l.offsetLine = 0
 	}
+
+	l.invalidateHeightCache()
 }
 
 // Focused returns whether the list is focused.
@@ -405,6 +538,11 @@ func (l *List) Focus() {
 // Blur removes the focus state from the list.
 func (l *List) Blur() {
 	l.focused = false
+}
+
+// AtTop returns whether the list is scrolled to the very top.
+func (l *List) AtTop() bool {
+	return l.offsetIdx == 0 && l.offsetLine == 0
 }
 
 // ScrollToTop scrolls the list to the top.
@@ -432,16 +570,12 @@ func (l *List) ScrollToSelected() {
 
 	startIdx, endIdx := l.VisibleItemIndices()
 	if l.selectedIdx < startIdx {
-		// Selected item is above the visible range
 		l.offsetIdx = l.selectedIdx
 		l.offsetLine = 0
 	} else if l.selectedIdx > endIdx {
-		// Selected item is below the visible range
-		// Scroll so that the selected item is at the bottom
 		var totalHeight int
 		for i := l.selectedIdx; i >= 0; i-- {
-			item := l.getItem(i)
-			totalHeight += item.height
+			totalHeight += l.getItemHeight(i)
 			if l.gap > 0 && i < l.selectedIdx {
 				totalHeight += l.gap
 			}
@@ -452,7 +586,6 @@ func (l *List) ScrollToSelected() {
 			}
 		}
 		if totalHeight < l.height {
-			// All items fit in the viewport
 			l.ScrollToTop()
 		}
 	}
@@ -497,13 +630,11 @@ func (l *List) IsSelectedLast() bool {
 // It returns whether the selection changed.
 func (l *List) SelectPrev() bool {
 	if l.reverse {
-		// In reverse, visual up = higher index
 		if l.selectedIdx < len(l.items)-1 {
 			l.selectedIdx++
 			return true
 		}
 	} else {
-		// Normal: visual up = lower index
 		if l.selectedIdx > 0 {
 			l.selectedIdx--
 			return true
@@ -516,13 +647,11 @@ func (l *List) SelectPrev() bool {
 // It returns whether the selection changed.
 func (l *List) SelectNext() bool {
 	if l.reverse {
-		// In reverse, visual down = lower index
 		if l.selectedIdx > 0 {
 			l.selectedIdx--
 			return true
 		}
 	} else {
-		// Normal: visual down = higher index
 		if l.selectedIdx < len(l.items)-1 {
 			l.selectedIdx++
 			return true
@@ -623,22 +752,18 @@ func (l *List) findItemAtY(_, y int) (itemIdx int, itemY int) {
 		return -1, -1
 	}
 
-	// Walk through visible items to find which one contains this y
 	currentIdx := l.offsetIdx
-	currentLine := -l.offsetLine // Negative because offsetLine is how many lines are hidden
+	currentLine := -l.offsetLine
 
 	for currentIdx < len(l.items) && currentLine < l.height {
-		item := l.getItem(currentIdx)
-		itemEndLine := currentLine + item.height
+		h := l.getItemHeight(currentIdx)
+		itemEndLine := currentLine + h
 
-		// Check if y is within this item's visible range
 		if y >= currentLine && y < itemEndLine {
-			// Found the item, calculate itemY (offset within the item)
 			itemY = y - currentLine
 			return currentIdx, itemY
 		}
 
-		// Move to next item
 		currentLine = itemEndLine
 		if l.gap > 0 {
 			currentLine += l.gap

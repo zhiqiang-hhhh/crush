@@ -43,6 +43,14 @@ type Expandable interface {
 	ToggleExpanded() bool
 }
 
+// ImagePreviewable represents an item that can provide an image attachment
+// for preview after a mouse click.
+type ImagePreviewable interface {
+	// PendingImagePreview returns the attachment to preview after a click,
+	// or nil if no image preview was requested.
+	PendingImagePreview() *message.Attachment
+}
+
 // KeyEventHandler is an interface for items that can handle key events.
 type KeyEventHandler interface {
 	HandleKeyEvent(key tea.KeyMsg) (bool, tea.Cmd)

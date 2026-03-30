@@ -463,7 +463,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		agentCfg := cfgPrime.Agents[config.AgentCoder]
 		model := cfgPrime.GetModelByType(agentCfg.Model)
 		if model != nil && model.SupportsImages {
-			commands = append(commands, NewCommandItem(c.com.Styles, "file_picker", "Open File Picker", "ctrl+f", ActionOpenDialog{
+			commands = append(commands, NewCommandItem(c.com.Styles, "file_picker", "Open File Picker", "alt+a", ActionOpenDialog{
 				DialogID: FilePickerID,
 			}))
 		}
@@ -475,7 +475,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	// because os.Getenv does IO is breaks the TEA paradigm and is generally an
 	// antipattern.
 	if os.Getenv("EDITOR") != "" {
-		commands = append(commands, NewCommandItem(c.com.Styles, "open_external_editor", "Open External Editor", "ctrl+o", ActionExternalEditor{}))
+		commands = append(commands, NewCommandItem(c.com.Styles, "open_external_editor", "Open External Editor", "alt+shift+e", ActionExternalEditor{}))
 	}
 
 	// Add Docker MCP command if available and not already enabled.
@@ -511,7 +511,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	commands = append(commands, NewCommandItem(c.com.Styles, "toggle_notifications", notificationLabel, "", ActionToggleNotifications{}))
 
 	commands = append(commands,
-		NewCommandItem(c.com.Styles, "toggle_yolo", "Toggle Yolo Mode", "", ActionToggleYoloMode{}),
+		NewCommandItem(c.com.Styles, "toggle_yolo", "Toggle Yolo Mode", "ctrl+y", ActionToggleYoloMode{}),
 		NewCommandItem(c.com.Styles, "toggle_help", "Toggle Help", "ctrl+g", ActionToggleHelp{}),
 		NewCommandItem(c.com.Styles, "init", "Initialize Project", "", ActionInitializeProject{}),
 	)

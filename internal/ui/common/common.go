@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/base64"
 	"fmt"
 	"image"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // MaxAttachmentSize defines the maximum allowed size for file attachments (5 MB).
@@ -94,7 +96,7 @@ func CopyToClipboard(text, successMessage string) tea.Cmd {
 // This is useful when you need to perform additional actions like clearing UI state.
 func CopyToClipboardWithCallback(text, successMessage string, callback tea.Cmd) tea.Cmd {
 	return tea.Sequence(
-		tea.SetClipboard(text),
+		SetClipboardOSC52(text),
 		func() tea.Msg {
 			_ = clipboard.WriteAll(text)
 			return nil
@@ -102,4 +104,16 @@ func CopyToClipboardWithCallback(text, successMessage string, callback tea.Cmd) 
 		callback,
 		util.ReportInfo(successMessage),
 	)
+}
+
+// SetClipboardOSC52 writes an OSC 52 clipboard sequence to the terminal.
+// When running inside tmux, the sequence is wrapped in a DCS tmux
+// passthrough so the outer terminal receives it.
+func SetClipboardOSC52(text string) tea.Cmd {
+	encoded := base64.StdEncoding.EncodeToString([]byte(text))
+	seq := "\x1b]52;c;" + encoded + "\x1b\\"
+	if _, ok := os.LookupEnv("TMUX"); ok {
+		seq = ansi.TmuxPassthrough(seq)
+	}
+	return tea.Raw(seq)
 }

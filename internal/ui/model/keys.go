@@ -21,6 +21,11 @@ type KeyMap struct {
 		// History navigation
 		HistoryPrev key.Binding
 		HistoryNext key.Binding
+
+		// Chat navigation (scroll viewport from editor)
+		PrevUserMessage key.Binding
+		NextUserMessage key.Binding
+		ScrollToEnd     key.Binding
 	}
 
 	Chat struct {
@@ -63,6 +68,7 @@ type KeyMap struct {
 	Models   key.Binding
 	Suspend  key.Binding
 	Sessions key.Binding
+	YoloMode key.Binding
 	Tab      key.Binding
 }
 
@@ -92,6 +98,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+s"),
 			key.WithHelp("ctrl+s", "sessions"),
 		),
+		YoloMode: key.NewBinding(
+			key.WithKeys("ctrl+y"),
+			key.WithHelp("ctrl+y", "yolo mode"),
+		),
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("tab", "change focus"),
@@ -107,8 +117,8 @@ func DefaultKeyMap() KeyMap {
 		key.WithHelp("enter", "send"),
 	)
 	km.Editor.OpenEditor = key.NewBinding(
-		key.WithKeys("ctrl+o"),
-		key.WithHelp("ctrl+o", "open editor"),
+		key.WithKeys("alt+shift+e"),
+		key.WithHelp("alt+shift+e", "open editor"),
 	)
 	km.Editor.Newline = key.NewBinding(
 		key.WithKeys("shift+enter", "ctrl+j"),
@@ -118,8 +128,8 @@ func DefaultKeyMap() KeyMap {
 		key.WithHelp("ctrl+j", "newline"),
 	)
 	km.Editor.AddImage = key.NewBinding(
-		key.WithKeys("ctrl+f"),
-		key.WithHelp("ctrl+f", "add image"),
+		key.WithKeys("alt+a"),
+		key.WithHelp("alt+a", "add image"),
 	)
 	km.Editor.PasteImage = key.NewBinding(
 		key.WithKeys("ctrl+v"),
@@ -151,14 +161,26 @@ func DefaultKeyMap() KeyMap {
 	km.Editor.HistoryNext = key.NewBinding(
 		key.WithKeys("down"),
 	)
+	km.Editor.PrevUserMessage = key.NewBinding(
+		key.WithKeys("alt+k"),
+		key.WithHelp("alt+k", "prev user message"),
+	)
+	km.Editor.NextUserMessage = key.NewBinding(
+		key.WithKeys("alt+j"),
+		key.WithHelp("alt+j", "next user message"),
+	)
+	km.Editor.ScrollToEnd = key.NewBinding(
+		key.WithKeys("alt+e"),
+		key.WithHelp("alt+e", "scroll to end"),
+	)
 
 	km.Chat.NewSession = key.NewBinding(
 		key.WithKeys("ctrl+n"),
 		key.WithHelp("ctrl+n", "new session"),
 	)
 	km.Chat.AddAttachment = key.NewBinding(
-		key.WithKeys("ctrl+f"),
-		key.WithHelp("ctrl+f", "add attachment"),
+		key.WithKeys("alt+a"),
+		key.WithHelp("alt+a", "add attachment"),
 	)
 	km.Chat.Cancel = key.NewBinding(
 		key.WithKeys("esc", "alt+esc"),

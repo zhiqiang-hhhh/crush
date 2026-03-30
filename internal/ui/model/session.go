@@ -2,30 +2,55 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
+	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/diff"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/history"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/x/ansi"
 )
 
+// turnWindowInit is the default number of user-message turns shown when a
+// session is first loaded.
+const turnWindowInit = 20
+
+// turnWindowBatch is the number of additional turns revealed when the user
+// scrolls to the top.
+const turnWindowBatch = 16
+
+// messagePageSize is the number of DB messages fetched per page. This is
+// larger than turnWindowInit because each turn consists of multiple messages
+// (user + assistant + tool results).
+const messagePageSize = 200
+
 // loadSessionMsg is a message indicating that a session and its files have
-// been loaded.
+// been loaded, including preprocessed chat messages.
 type loadSessionMsg struct {
-	session   *session.Session
-	files     []SessionFile
-	readFiles []string
+	session         *session.Session
+	files           []SessionFile
+	readFiles       []string
+	messageItems    []chat.MessageItem
+	remainingItems  []chat.MessageItem // items from the page that weren't rendered (above the turn window)
+	cursor          message.MessageCursor
+	hasMore         bool
+	planMode        bool
+	lastUserMsgTime int64
 }
 
 // lspFilePaths returns deduplicated file paths from both modified and read
@@ -66,27 +91,236 @@ type SessionFile struct {
 // returns a sessionFilesLoadedMsg containing the processed session files.
 func (m *UI) loadSession(sessionID string) tea.Cmd {
 	return func() tea.Msg {
-		session, err := m.com.App.Sessions.Get(context.Background(), sessionID)
+		ctx := context.Background()
+
+		sess, err := m.com.App.Sessions.Get(ctx, sessionID)
 		if err != nil {
-			return util.ReportError(err)
+			return util.ReportError(err)()
 		}
 
 		sessionFiles, err := m.loadSessionFiles(sessionID)
 		if err != nil {
-			return util.ReportError(err)
+			return util.ReportError(err)()
 		}
 
-		readFiles, err := m.com.App.FileTracker.ListReadFiles(context.Background(), sessionID)
+		readFiles, err := m.com.App.FileTracker.ListReadFiles(ctx, sessionID)
 		if err != nil {
 			slog.Error("Failed to load read files for session", "error", err)
 		}
 
+		items, cursor, hasMore, planMode, lastUserMsgTime := m.prepareSessionMessages(ctx, sessionID)
+
+		// Compute the turn window: show only the last turnWindowInit turns.
+		turnStart := turnStartIndex(items, turnWindowInit)
+		var windowedItems []chat.MessageItem
+		if turnStart > 0 {
+			windowedItems = items[turnStart:]
+		} else {
+			windowedItems = items
+		}
+
 		return loadSessionMsg{
-			session:   &session,
-			files:     sessionFiles,
-			readFiles: readFiles,
+			session:         &sess,
+			files:           sessionFiles,
+			readFiles:       readFiles,
+			messageItems:    windowedItems,
+			cursor:          cursor,
+			hasMore:         hasMore || turnStart > 0,
+			planMode:        planMode,
+			lastUserMsgTime: lastUserMsgTime,
+			remainingItems:  items[:turnStart],
 		}
 	}
+}
+
+// prepareSessionMessages loads the most recent page of messages for a session
+// off the UI thread. It returns the constructed message items, pagination info,
+// plan mode state, and the last user message timestamp.
+func (m *UI) prepareSessionMessages(ctx context.Context, sessionID string) ([]chat.MessageItem, message.MessageCursor, bool, bool, int64) {
+	page, err := m.com.App.Messages.ListRecent(ctx, sessionID, messagePageSize)
+	if err != nil {
+		slog.Error("Failed to load session messages", "error", err)
+		return nil, message.MessageCursor{}, false, false, 0
+	}
+	msgs := page.Messages
+
+	// Restore plan mode state from the last plan_mode tool result.
+	var planMode bool
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != message.Tool {
+			continue
+		}
+		found := false
+		for _, tr := range msgs[i].ToolResults() {
+			if tr.Name == agenttools.PlanModeToolName && tr.Metadata != "" {
+				var meta agenttools.PlanModeResponseMetadata
+				if err := json.Unmarshal([]byte(tr.Metadata), &meta); err == nil {
+					planMode = meta.PlanActive
+				}
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+
+	// Repair any assistant messages that were persisted without a Finish
+	// part (e.g. due to a crash or provider error mid-stream) so the UI
+	// does not show an infinite spinner.
+	for i := range msgs {
+		msgs[i].RepairUnfinished()
+	}
+
+	// Build tool result map.
+	msgPtrs := make([]*message.Message, len(msgs))
+	for i := range msgs {
+		msgPtrs[i] = &msgs[i]
+	}
+	toolResultMap := chat.BuildToolResultMap(msgPtrs)
+
+	var lastUserMsgTime int64
+	if len(msgPtrs) > 0 {
+		lastUserMsgTime = msgPtrs[0].CreatedAt
+	}
+
+	// Extract message items.
+	items := make([]chat.MessageItem, 0, len(msgs)*2)
+	for _, msg := range msgPtrs {
+		switch msg.Role {
+		case message.User:
+			lastUserMsgTime = msg.CreatedAt
+			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
+		case message.Assistant:
+			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
+			if msg.FinishPart() != nil && msg.FinishPart().Reason == message.FinishReasonEndTurn {
+				infoItem := chat.NewAssistantInfoItem(m.com.Styles, msg, m.com.Config(), time.Unix(lastUserMsgTime, 0))
+				items = append(items, infoItem)
+			}
+		default:
+			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
+		}
+	}
+
+	// Load nested tool calls.
+	m.loadNestedToolCalls(items)
+
+	return items, page.Cursor, page.HasMore, planMode, lastUserMsgTime
+}
+
+// turnStartIndex scans items backwards and returns the index where the last
+// maxTurns user-message turns begin. A "turn" starts at each UserMessageItem.
+// If the total number of turns is <= maxTurns, it returns 0 (show everything).
+func turnStartIndex(items []chat.MessageItem, maxTurns int) int {
+	turns := 0
+	for i := len(items) - 1; i >= 0; i-- {
+		if _, ok := items[i].(*chat.UserMessageItem); ok {
+			turns++
+			if turns > maxTurns {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+// loadMoreHistoryMsg carries the older items to prepend when the user scrolls
+// to the top of the chat.
+type loadMoreHistoryMsg struct {
+	items          []chat.MessageItem
+	remainingItems []chat.MessageItem // leftover items above the reveal window
+	cursor         message.MessageCursor
+	hasMore        bool
+}
+
+// loadMoreHistory returns a tea.Cmd that reveals more history. It first drains
+// any remaining in-memory items (from render windowing), then fetches older
+// pages from the database via cursor pagination.
+func (m *UI) loadMoreHistory() tea.Cmd {
+	remaining := m.remainingItems
+	cursor := m.historyCursor
+	hasMore := m.historyHasMore
+	sessionID := ""
+	if m.session != nil {
+		sessionID = m.session.ID
+	}
+	msgSvc := m.com.App.Messages
+	styles := m.com.Styles
+	cfg := m.com.Config()
+
+	return func() tea.Msg {
+		// First: drain remaining in-memory items from the initial page.
+		if len(remaining) > 0 {
+			newStart := turnStartIndex(remaining, turnWindowBatch)
+			items := remaining[newStart:]
+			return loadMoreHistoryMsg{
+				items:          items,
+				remainingItems: remaining[:newStart],
+				cursor:         cursor,
+				hasMore:        hasMore || newStart > 0,
+			}
+		}
+
+		// Second: fetch from DB.
+		if !hasMore || sessionID == "" {
+			return loadMoreHistoryMsg{}
+		}
+
+		ctx := context.Background()
+		page, err := msgSvc.ListBefore(ctx, sessionID, cursor, messagePageSize)
+		if err != nil {
+			slog.Error("Failed to load more history", "error", err)
+			return loadMoreHistoryMsg{cursor: cursor, hasMore: hasMore}
+		}
+
+		// Build items from the fetched page.
+		items := buildMessageItems(styles, cfg, page.Messages)
+
+		// Apply turn windowing to the fetched page.
+		turnStart := turnStartIndex(items, turnWindowBatch)
+		windowedItems := items[turnStart:]
+
+		return loadMoreHistoryMsg{
+			items:          windowedItems,
+			remainingItems: items[:turnStart],
+			cursor:         page.Cursor,
+			hasMore:        page.HasMore || turnStart > 0,
+		}
+	}
+}
+
+// buildMessageItems converts a slice of messages into chat items. It does NOT
+// handle plan-mode detection or nested tool calls — those are done once during
+// initial load only.
+func buildMessageItems(styles *styles.Styles, cfg *config.Config, msgs []message.Message) []chat.MessageItem {
+	for i := range msgs {
+		msgs[i].RepairUnfinished()
+	}
+	msgPtrs := make([]*message.Message, len(msgs))
+	for i := range msgs {
+		msgPtrs[i] = &msgs[i]
+	}
+	toolResultMap := chat.BuildToolResultMap(msgPtrs)
+
+	var lastUserMsgTime int64
+	items := make([]chat.MessageItem, 0, len(msgs)*2)
+	for _, msg := range msgPtrs {
+		switch msg.Role {
+		case message.User:
+			lastUserMsgTime = msg.CreatedAt
+			items = append(items, chat.ExtractMessageItems(styles, msg, toolResultMap)...)
+		case message.Assistant:
+			items = append(items, chat.ExtractMessageItems(styles, msg, toolResultMap)...)
+			if msg.FinishPart() != nil && msg.FinishPart().Reason == message.FinishReasonEndTurn {
+				infoItem := chat.NewAssistantInfoItem(styles, msg, cfg, time.Unix(lastUserMsgTime, 0))
+				items = append(items, infoItem)
+			}
+		default:
+			items = append(items, chat.ExtractMessageItems(styles, msg, toolResultMap)...)
+		}
+	}
+	return items
 }
 
 func (m *UI) loadSessionFiles(sessionID string) ([]SessionFile, error) {
@@ -145,8 +379,9 @@ func (m *UI) handleFileEvent(file history.File) tea.Cmd {
 		return nil
 	}
 
+	sessionID := m.session.ID
 	return func() tea.Msg {
-		sessionFiles, err := m.loadSessionFiles(m.session.ID)
+		sessionFiles, err := m.loadSessionFiles(sessionID)
 		// could not load session files
 		if err != nil {
 			return util.NewErrorMsg(err)

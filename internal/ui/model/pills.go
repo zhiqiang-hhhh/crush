@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // pillStyle returns the appropriate style for a pill based on focus state.
@@ -49,6 +50,12 @@ func hasInProgressTodo(todos []session.Todo) bool {
 		}
 	}
 	return false
+}
+
+// planModePill renders the plan mode indicator pill.
+func planModePill(t *styles.Styles) string {
+	label := t.Base.Render("Plan Mode")
+	return t.Pills.Focused.Render(label)
 }
 
 // queuePill renders the queue count pill with gradient triangles.
@@ -98,8 +105,8 @@ func todoPill(todos []session.Todo, spinnerView string, focused, panelFocused bo
 		if currentTodo.ActiveForm != "" {
 			taskText = currentTodo.ActiveForm
 		}
-		if len(taskText) > maxTaskDisplayLength {
-			taskText = taskText[:maxTaskDisplayLength-1] + "…"
+		if ansi.StringWidth(taskText) > maxTaskDisplayLength {
+			taskText = ansi.Truncate(taskText, maxTaskDisplayLength, "…")
 		}
 		task := t.Subtle.Render(taskText)
 		content = fmt.Sprintf("%s %s %s  %s", spinnerView, label, progress, task)
@@ -124,8 +131,8 @@ func queueList(queueItems []string, t *styles.Styles) string {
 	var lines []string
 	for _, item := range queueItems {
 		text := item
-		if len(text) > maxQueueDisplayLength {
-			text = text[:maxQueueDisplayLength-1] + "…"
+		if ansi.StringWidth(text) > maxQueueDisplayLength {
+			text = ansi.Truncate(text, maxQueueDisplayLength, "…")
 		}
 		prefix := t.Pills.QueueItemPrefix.Render() + " "
 		lines = append(lines, prefix+t.Muted.Render(text))
@@ -189,7 +196,7 @@ func (m *UI) pillsAreaHeight() int {
 	}
 	hasIncomplete := hasIncompleteTodos(m.session.Todos)
 	hasQueue := m.promptQueue > 0
-	hasPills := hasIncomplete || hasQueue
+	hasPills := hasIncomplete || hasQueue || m.planMode
 	if !hasPills {
 		return 0
 	}
@@ -223,7 +230,7 @@ func (m *UI) renderPills() {
 	hasIncomplete := hasIncompleteTodos(m.session.Todos)
 	hasQueue := m.promptQueue > 0
 
-	if !hasIncomplete && !hasQueue {
+	if !hasIncomplete && !hasQueue && !m.planMode {
 		return
 	}
 
@@ -237,6 +244,9 @@ func (m *UI) renderPills() {
 	}
 
 	var pills []string
+	if m.planMode {
+		pills = append(pills, planModePill(t))
+	}
 	if hasIncomplete {
 		pills = append(pills, todoPill(m.session.Todos, inProgressIcon, todosFocused, m.pillsExpanded, t))
 	}

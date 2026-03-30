@@ -1,11 +1,13 @@
 package model
 
 import (
+	"image"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/chat"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -28,6 +30,12 @@ type DelayedClickMsg struct {
 	ClickID int
 	ItemIdx int
 	X, Y    int
+}
+
+// ImagePreviewMsg is sent when a user clicks on an image attachment to
+// request an image preview dialog.
+type ImagePreviewMsg struct {
+	Attachment message.Attachment
 }
 
 // Chat represents the chat UI model that handles chat interactions and
@@ -88,14 +96,40 @@ func (m *Chat) Height() int {
 	return m.list.Height()
 }
 
+// scrollbarWidth is the width of the scrollbar column.
+const scrollbarWidth = 1
+
 // Draw renders the chat UI component to the screen and the given area.
 func (m *Chat) Draw(scr uv.Screen, area uv.Rectangle) {
-	uv.NewStyledString(m.list.Render()).Draw(scr, area)
+	// Draw the list content in the left portion, leaving room for the scrollbar.
+	contentArea := image.Rect(area.Min.X, area.Min.Y, area.Max.X-scrollbarWidth, area.Max.Y)
+	uv.NewStyledString(m.list.Render()).Draw(scr, contentArea)
+
+	// Draw scrollbar on the right edge using chat-specific styles.
+	totalHeight, offset := m.list.ScrollInfo()
+	viewportHeight := area.Dy()
+	s := m.com.Styles
+	scrollbar := common.ScrollbarStyled(
+		s.Chat.ScrollbarThumb, s.Chat.ScrollbarTrack,
+		viewportHeight, totalHeight, viewportHeight, offset,
+	)
+	if scrollbar != "" {
+		sbArea := image.Rect(area.Max.X-scrollbarWidth, area.Min.Y, area.Max.X, area.Max.Y)
+		uv.NewStyledString(scrollbar).Draw(scr, sbArea)
+	}
+
+	// Show a follow-mode indicator at the bottom-right when following.
+	if m.follow && m.list.Len() > 0 {
+		indicator := s.Chat.ScrollbarThumb.Render("▼")
+		indicatorArea := image.Rect(area.Max.X-scrollbarWidth, area.Max.Y-1, area.Max.X, area.Max.Y)
+		uv.NewStyledString(indicator).Draw(scr, indicatorArea)
+	}
 }
 
 // SetSize sets the size of the chat view port.
 func (m *Chat) SetSize(width, height int) {
-	m.list.SetSize(width, height)
+	// Reserve space for the scrollbar column.
+	m.list.SetSize(width-scrollbarWidth, height)
 	// Anchor to bottom if we were at the bottom.
 	if m.AtBottom() {
 		m.ScrollToBottom()
@@ -142,6 +176,39 @@ func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
 		items[i] = msg
 	}
 	m.list.AppendItems(items...)
+}
+
+// PrependMessages prepends message items to the beginning of the chat list.
+// The viewport offset is adjusted so the currently visible content stays in
+// place (no visual jump).
+func (m *Chat) PrependMessages(msgs ...chat.MessageItem) {
+	if len(msgs) == 0 {
+		return
+	}
+
+	// Shift existing indices in the ID map.
+	shift := len(msgs)
+	for id, idx := range m.idInxMap {
+		m.idInxMap[id] = idx + shift
+	}
+
+	// Register new items.
+	items := make([]list.Item, len(msgs))
+	for i, msg := range msgs {
+		m.idInxMap[msg.ID()] = i
+		if container, ok := msg.(chat.NestedToolContainer); ok {
+			for _, nested := range container.NestedTools() {
+				m.idInxMap[nested.ID()] = i
+			}
+		}
+		items[i] = msg
+	}
+	m.list.PrependItems(items...)
+}
+
+// AtTop returns whether the chat list is currently scrolled to the very top.
+func (m *Chat) AtTop() bool {
+	return m.list.AtTop()
 }
 
 // UpdateNestedToolIDs updates the ID map for nested tools within a container.
@@ -243,9 +310,20 @@ func (m *Chat) Blur() {
 	m.list.Blur()
 }
 
+// nearBottomThreshold is the number of lines from the bottom within which
+// follow mode re-engages when scrolling down.
+const nearBottomThreshold = 5
+
 // AtBottom returns whether the chat list is currently scrolled to the bottom.
 func (m *Chat) AtBottom() bool {
 	return m.list.AtBottom()
+}
+
+// NearBottom returns whether the chat list is within a few lines of the
+// bottom. This is more forgiving than AtBottom and is used to re-engage
+// follow mode when the user scrolls close to the bottom during streaming.
+func (m *Chat) NearBottom() bool {
+	return m.list.NearBottom(nearBottomThreshold)
 }
 
 // Follow returns whether the chat view is in follow mode (auto-scroll to
@@ -269,7 +347,10 @@ func (m *Chat) ScrollToTop() {
 // ScrollBy scrolls the chat view by the given number of line deltas.
 func (m *Chat) ScrollBy(lines int) {
 	m.list.ScrollBy(lines)
-	m.follow = lines > 0 && m.AtBottom() // Disable follow mode if user scrolls up
+	// Re-engage follow mode when scrolling down and near the bottom.
+	// Using NearBottom instead of AtBottom so that follow re-engages
+	// even when streaming content grows faster than the user scrolls.
+	m.follow = lines > 0 && m.NearBottom()
 }
 
 // ScrollToSelected scrolls the chat view to the selected item.
@@ -371,6 +452,36 @@ func (m *Chat) SelectNext() {
 			return
 		}
 		if m.isSelectable(m.list.Selected()) {
+			return
+		}
+	}
+}
+
+// SelectPrevUserMessage selects the previous user message in the chat list.
+func (m *Chat) SelectPrevUserMessage() {
+	cur := m.list.Selected()
+	for {
+		if !m.list.SelectPrev() {
+			m.list.SetSelected(cur)
+			return
+		}
+		item := m.list.ItemAt(m.list.Selected())
+		if _, ok := item.(*chat.UserMessageItem); ok {
+			return
+		}
+	}
+}
+
+// SelectNextUserMessage selects the next user message in the chat list.
+func (m *Chat) SelectNextUserMessage() {
+	cur := m.list.Selected()
+	for {
+		if !m.list.SelectNext() {
+			m.list.SetSelected(cur)
+			return
+		}
+		item := m.list.ItemAt(m.list.Selected())
+		if _, ok := item.(*chat.UserMessageItem); ok {
 			return
 		}
 	}
@@ -479,12 +590,21 @@ func (m *Chat) MessageItem(id string) chat.MessageItem {
 	return item
 }
 
+// InvalidateItemHeight invalidates the cached height for the item with the
+// given ID. Call this after mutating an item's content.
+func (m *Chat) InvalidateItemHeight(id string) {
+	if idx, ok := m.idInxMap[id]; ok {
+		m.list.InvalidateItemHeight(idx)
+	}
+}
+
 // ToggleExpandedSelectedItem expands the selected message item if it is expandable.
 func (m *Chat) ToggleExpandedSelectedItem() {
 	if expandable, ok := m.list.SelectedItem().(chat.Expandable); ok {
 		if !expandable.ToggleExpanded() {
 			m.ScrollToIndex(m.list.Selected())
 		}
+		m.list.InvalidateItemHeight(m.list.Selected())
 		if m.AtBottom() {
 			m.ScrollToBottom()
 		}
@@ -576,15 +696,15 @@ func (m *Chat) HandleMouseDown(x, y int) (bool, tea.Cmd) {
 // HandleDelayedClick handles a delayed single-click action (like expansion).
 // It only executes if the click ID matches (i.e., no double-click occurred)
 // and no text selection was made (drag to select).
-func (m *Chat) HandleDelayedClick(msg DelayedClickMsg) bool {
+func (m *Chat) HandleDelayedClick(msg DelayedClickMsg) (bool, tea.Cmd) {
 	// Ignore if this click was superseded by a newer click (double/triple).
 	if msg.ClickID != m.pendingClickID {
-		return false
+		return false, nil
 	}
 
 	// Don't expand if user dragged to select text.
 	if m.HasHighlight() {
-		return false
+		return false, nil
 	}
 
 	// Execute the click action (e.g., expansion).
@@ -597,13 +717,24 @@ func (m *Chat) HandleDelayedClick(msg DelayedClickMsg) bool {
 				m.ScrollToIndex(m.list.Selected())
 			}
 		}
+		m.list.InvalidateItemHeight(m.list.Selected())
 		if m.AtBottom() {
 			m.ScrollToBottom()
 		}
-		return handled
+
+		// Check if the item wants to open an image preview.
+		if handled {
+			if previewable, ok := selectedItem.(chat.ImagePreviewable); ok {
+				if att := previewable.PendingImagePreview(); att != nil {
+					return true, func() tea.Msg { return ImagePreviewMsg{Attachment: *att} }
+				}
+			}
+		}
+
+		return handled, nil
 	}
 
-	return false
+	return false, nil
 }
 
 // HandleMouseUp handles mouse up events for the chat component.

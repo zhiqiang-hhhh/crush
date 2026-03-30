@@ -1,10 +1,13 @@
 package model
 
 import (
+	"strings"
+
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/ultraviolet/layout"
+	"github.com/charmbracelet/crush/internal/ui/logo"
+	"github.com/charmbracelet/crush/internal/ui/styles"
 )
 
 // selectedLargeModel returns the currently selected large language model from
@@ -17,34 +20,54 @@ func (m *UI) selectedLargeModel() *agent.Model {
 	return nil
 }
 
-// landingView renders the landing page view showing the current working
-// directory, model information, and LSP/MCP status in a two-column layout.
-func (m *UI) landingView() string {
+// landingView renders the landing page header: centered big logo, dividers,
+// project info, and model details. The width is the inner content width
+// (without outer padding).
+func (m *UI) landingView(width int) string {
 	t := m.com.Styles
-	width := m.layout.main.Dx()
+
+	crushLogo := logo.LandingRender(t, t.LogoTitleColorA, t.LogoTitleColorB)
+	crushLogo = centerText(crushLogo, width)
+
+	divider := styles.ApplyForegroundGrad(t,
+		strings.Repeat("─", width),
+		t.BgSubtle, t.BgOverlay,
+	)
+
 	cwd := common.PrettyPath(t, m.com.Store().WorkingDir(), width)
+	modelInfo := m.modelInfo(width)
 
-	parts := []string{
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		crushLogo,
+		"",
+		divider,
+		"",
 		cwd,
+		modelInfo,
+		"",
+		divider,
+	)
+}
+
+// centerText horizontally centers a multi-line string within the given width.
+func centerText(s string, width int) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w < width {
+			pad := (width - w) / 2
+			lines[i] = strings.Repeat(" ", pad) + line
+		}
 	}
+	return strings.Join(lines, "\n")
+}
 
-	parts = append(parts, "", m.modelInfo(width))
-	infoSection := lipgloss.JoinVertical(lipgloss.Left, parts...)
-
-	_, remainingHeightArea := layout.SplitVertical(m.layout.main, layout.Fixed(lipgloss.Height(infoSection)+1))
-
-	mcpLspSectionWidth := min(30, (width-1)/2)
-
-	lspSection := m.lspInfo(mcpLspSectionWidth, max(1, remainingHeightArea.Dy()), false)
-	mcpSection := m.mcpInfo(mcpLspSectionWidth, max(1, remainingHeightArea.Dy()), false)
-
-	content := lipgloss.JoinHorizontal(lipgloss.Left, lspSection, " ", mcpSection)
-
-	return lipgloss.NewStyle().
-		Width(width).
-		Height(m.layout.main.Dy() - 1).
-		PaddingTop(1).
-		Render(
-			lipgloss.JoinVertical(lipgloss.Left, infoSection, "", content),
-		)
+// landingLoadingView renders a spinner + loading text shown on the landing page
+// while a session is being loaded.
+func (m *UI) landingLoadingView(width int) string {
+	t := m.com.Styles
+	text := m.loadingSpinner.View() + " Loading session…"
+	styled := lipgloss.NewStyle().Foreground(t.FgMuted).Render(text)
+	return centerText(styled, width)
 }

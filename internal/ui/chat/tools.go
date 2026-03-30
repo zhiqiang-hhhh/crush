@@ -3,6 +3,7 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,6 +25,10 @@ import (
 
 // responseContextHeight limits the number of lines displayed in tool output.
 const responseContextHeight = 10
+
+// maxCollapsedNestedTools is the number of nested tool calls shown when an
+// agent tool's nested output is collapsed.
+const maxCollapsedNestedTools = 3
 
 // toolBodyLeftPaddingTotal represents the padding that should be applied to each tool body
 const toolBodyLeftPaddingTotal = 2
@@ -96,6 +101,7 @@ type ToolRenderOpts struct {
 	Compact         bool
 	IsSpinning      bool
 	Status          ToolStatus
+	RunStartedAt    time.Time
 }
 
 // IsPending returns true if the tool call is still pending (not finished and
@@ -155,6 +161,7 @@ type baseToolMessageItem struct {
 	sty             *styles.Styles
 	anim            *anim.Anim
 	expandedContent bool
+	runStartedAt    time.Time
 }
 
 var _ Expandable = (*baseToolMessageItem)(nil)
@@ -185,6 +192,9 @@ func newBaseToolMessageItem(
 		result:                   result,
 		status:                   status,
 		hasCappedWidth:           hasCappedWidth,
+	}
+	if toolCall.Finished && result == nil {
+		t.runStartedAt = time.Now()
 	}
 	t.anim = anim.New(anim.Settings{
 		ID:          toolCall.ID,
@@ -312,6 +322,7 @@ func (t *baseToolMessageItem) RawRender(width int) string {
 			Compact:         t.isCompact,
 			IsSpinning:      t.isSpinning(),
 			Status:          t.computeStatus(),
+			RunStartedAt:    t.runStartedAt,
 		})
 		height = lipgloss.Height(content)
 		// cache the rendered content
@@ -345,6 +356,9 @@ func (t *baseToolMessageItem) ToolCall() message.ToolCall {
 
 // SetToolCall sets the tool call associated with this message item.
 func (t *baseToolMessageItem) SetToolCall(tc message.ToolCall) {
+	if tc.Finished && !t.toolCall.Finished {
+		t.runStartedAt = time.Now()
+	}
 	t.toolCall = tc
 	t.clearCache()
 }
@@ -396,7 +410,10 @@ func (t *baseToolMessageItem) isSpinning() bool {
 			Status:   t.status,
 		})
 	}
-	return !t.toolCall.Finished && t.status != ToolStatusCanceled
+	if t.status == ToolStatusCanceled {
+		return false
+	}
+	return !t.toolCall.Finished || t.computeStatus() == ToolStatusRunning
 }
 
 // SetSpinningFunc sets a custom function to determine if the tool should spin.
@@ -454,11 +471,43 @@ func toolEarlyStateContent(sty *styles.Styles, opts *ToolRenderOpts, width int) 
 	case ToolStatusAwaitingPermission:
 		msg = sty.Tool.StateWaiting.Render("Requesting permission...")
 	case ToolStatusRunning:
-		msg = sty.Tool.StateWaiting.Render("Waiting for tool response...")
+		msg = sty.Tool.StateWaiting.Render(runningStatusText(opts.RunStartedAt))
 	default:
 		return "", false
 	}
 	return msg, true
+}
+
+// runningStatusText builds a status line like "Running for 5s · ESC to cancel".
+func runningStatusText(startedAt time.Time) string {
+	if startedAt.IsZero() {
+		return "Waiting for tool response…"
+	}
+	elapsed := time.Since(startedAt)
+	return fmt.Sprintf("Running for %s · ESC to cancel", formatElapsed(elapsed))
+}
+
+// formatElapsed formats a duration as a human-readable string: "3s", "1m 30s",
+// "2h 5m".
+func formatElapsed(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(math.Max(1, d.Seconds())))
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m < 60 {
+		if s == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	h := m / 60
+	m %= 60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh %dm", h, m)
 }
 
 // toolErrorContent formats an error message with ERROR tag.

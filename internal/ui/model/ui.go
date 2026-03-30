@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -11,6 +13,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -29,6 +32,7 @@ import (
 	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/app"
+	"github.com/charmbracelet/crush/internal/askuser"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/fsext"
@@ -51,14 +55,14 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/version"
 	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/ultraviolet/layout"
+	layoutpkg "github.com/charmbracelet/ultraviolet/layout"
 	"github.com/charmbracelet/ultraviolet/screen"
 	"github.com/charmbracelet/x/editor"
 )
 
 // MouseScrollThreshold defines how many lines to scroll the chat when a mouse
 // wheel event occurs.
-const MouseScrollThreshold = 5
+const MouseScrollThreshold = 3
 
 // Compact mode breakpoints.
 const (
@@ -136,6 +140,18 @@ type (
 
 	// copyChatHighlightMsg is sent to copy the current chat highlight to clipboard.
 	copyChatHighlightMsg struct{}
+
+	// copyChatHighlightDoneMsg is sent after clipboard copy completes to
+	// restore focus on the main goroutine.
+	copyChatHighlightDoneMsg struct{}
+
+	// insertFileCompletionMsg is returned from the insertFileCompletion
+	// Cmd to apply the file read tracking and attachment on the main
+	// goroutine, avoiding a data race on m.sessionFileReads.
+	insertFileCompletionMsg struct {
+		AbsPath    string
+		Attachment message.Attachment
+	}
 
 	// sessionFilesUpdatesMsg is sent when the files for this session have been updated
 	sessionFilesUpdatesMsg struct {
@@ -235,6 +251,12 @@ type UI struct {
 	// by user toggle or auto-switch based on window size)
 	isCompact bool
 
+	// pendingToolResults buffers tool results that arrive before their
+	// corresponding tool item has been created in the UI. This handles a
+	// race where OnToolResult fires so fast that the CreatedEvent reaches
+	// the UI before the UpdatedEvent that creates the tool item.
+	pendingToolResults map[string]*message.ToolResult
+
 	// detailsOpen tracks whether the details panel is open (in compact mode)
 	detailsOpen bool
 
@@ -243,10 +265,19 @@ type UI struct {
 	focusedPillSection pillSection
 	promptQueue        int
 	pillsView          string
+	planMode           bool
+
+	// landingEditorRect is the dynamically computed editor rect when in
+	// landing state, used for cursor positioning without mutating the layout.
+	landingEditorRect image.Rectangle
 
 	// Todo spinner
 	todoSpinner    spinner.Model
 	todoIsSpinning bool
+
+	// Session loading spinner (shown on landing page while loading a session)
+	loadingSpinner spinner.Model
+	loadingSession bool
 
 	// mouse highlighting related state
 	lastClickTime time.Time
@@ -257,6 +288,14 @@ type UI struct {
 		index    int
 		draft    string
 	}
+
+	// Cursor-based history pagination: track the DB cursor, whether there are
+	// more pages in the DB, any in-memory items not yet revealed, and whether
+	// a load-more command is in flight.
+	historyCursor  message.MessageCursor
+	historyHasMore bool
+	remainingItems []chat.MessageItem // items from the current page above the turn window
+	loadingHistory bool               // true while a load-more command is in flight
 }
 
 // New creates a new instance of the [UI] model.
@@ -288,6 +327,11 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		spinner.WithStyle(com.Styles.Pills.TodoSpinner),
 	)
 
+	loadingSpinner := spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(com.Styles.Dialog.Spinner),
+	)
+
 	// Attachments component
 	attachments := attachments.New(
 		attachments.NewRenderer(
@@ -315,8 +359,10 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		completions:         comp,
 		attachments:         attachments,
 		todoSpinner:         todoSpinner,
+		loadingSpinner:      loadingSpinner,
 		lspStates:           make(map[string]app.LSPClientInfo),
 		mcpStates:           make(map[string]mcp.ClientInfo),
+		pendingToolResults:  make(map[string]*message.ToolResult),
 		notifyBackend:       notification.NoopBackend{},
 		notifyWindowFocused: true,
 		initialSessionID:    initialSessionID,
@@ -371,7 +417,8 @@ func (m *UI) Init() tea.Cmd {
 	cmds = append(cmds, m.loadPromptHistory())
 	// load initial session if specified
 	if cmd := m.loadInitialSession(); cmd != nil {
-		cmds = append(cmds, cmd)
+		m.loadingSession = true
+		cmds = append(cmds, cmd, m.loadingSpinner.Tick)
 	}
 	return tea.Batch(cmds...)
 }
@@ -388,7 +435,7 @@ func (m *UI) loadInitialSession() tea.Cmd {
 		return func() tea.Msg {
 			sess, err := m.com.App.Sessions.GetLast(context.Background())
 			if err != nil {
-				return nil
+				return util.ReportError(err)()
 			}
 			return m.loadSession(sess.ID)()
 		}
@@ -425,7 +472,7 @@ func (m *UI) shouldSendNotification() bool {
 
 // setState changes the UI state and focus.
 func (m *UI) setState(state uiState, focus uiFocusState) {
-	if state == uiLanding {
+	if state == uiLanding || state == uiInitialize {
 		// Always turn off compact mode when going to landing
 		m.isCompact = false
 	}
@@ -491,21 +538,42 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case loadSessionMsg:
+		m.loadingSession = false
+		m.pendingToolResults = make(map[string]*message.ToolResult)
 		if m.forceCompactMode {
 			m.isCompact = true
 		}
 		m.setState(uiChat, m.focus)
 		m.session = msg.session
+		m.syncTmuxSessionID()
 		m.sessionFiles = msg.files
 		cmds = append(cmds, m.startLSPs(msg.lspFilePaths()))
-		msgs, err := m.com.App.Messages.List(context.Background(), m.session.ID)
-		if err != nil {
-			cmds = append(cmds, util.ReportError(err))
-			break
+
+		m.planMode = msg.planMode
+		m.lastUserMessageTime = msg.lastUserMsgTime
+		m.renderPills()
+
+		// Store pagination state for "load more" on scroll-to-top.
+		m.historyCursor = msg.cursor
+		m.historyHasMore = msg.hasMore
+		m.remainingItems = msg.remainingItems
+		m.loadingHistory = false
+
+		if len(msg.messageItems) > 0 {
+			for _, item := range msg.messageItems {
+				if animatable, ok := item.(chat.Animatable); ok {
+					if cmd := animatable.StartAnimation(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			}
+			m.chat.SetMessages(msg.messageItems...)
+			if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			m.chat.SelectLast()
 		}
-		if cmd := m.setSessionMessages(msgs); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
+
 		if hasInProgressTodo(m.session.Todos) {
 			// only start spinner if there is an in-progress todo
 			if m.isAgentBusy() {
@@ -526,6 +594,22 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			paths = append(paths, f.LatestVersion.Path)
 		}
 		cmds = append(cmds, m.startLSPs(paths))
+
+	case loadMoreHistoryMsg:
+		m.loadingHistory = false
+		m.historyCursor = msg.cursor
+		m.historyHasMore = msg.hasMore
+		m.remainingItems = msg.remainingItems
+		if len(msg.items) > 0 {
+			for _, item := range msg.items {
+				if animatable, ok := item.(chat.Animatable); ok {
+					if cmd := animatable.StartAnimation(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+			}
+			m.chat.PrependMessages(msg.items...)
+		}
 
 	case sendMessageMsg:
 		cmds = append(cmds, m.sendMessage(msg.Content, msg.Attachments...))
@@ -643,6 +727,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case pubsub.Event[permission.PermissionNotification]:
 		m.handlePermissionNotification(msg.Payload)
+	case pubsub.Event[askuser.QuestionRequest]:
+		m.openAskUserDialog(msg.Payload)
+		if cmd := m.sendNotification(notification.Notification{
+			Title:   "Crush is waiting...",
+			Message: "Agent has a question for you",
+		}); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case cancelTimerExpiredMsg:
 		m.isCanceling = false
 	case tea.TerminalVersionMsg:
@@ -668,9 +760,24 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case copyChatHighlightMsg:
 		cmds = append(cmds, m.copyChatHighlight())
+	case copyChatHighlightDoneMsg:
+		m.chat.ClearMouse()
+		m.focus = uiFocusEditor
+		m.chat.Blur()
+		m.textarea.Focus() //nolint:errcheck // cursor blink cmd not needed here
+	case insertFileCompletionMsg:
+		m.sessionFileReads = append(m.sessionFileReads, msg.AbsPath)
+		m.attachments.Update(msg.Attachment)
+		return m, tea.Batch(cmds...)
 	case DelayedClickMsg:
 		// Handle delayed single-click action (e.g., expansion).
-		m.chat.HandleDelayedClick(msg)
+		if _, cmd := m.chat.HandleDelayedClick(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case ImagePreviewMsg:
+		if cmd := m.openImagePreviewDialog(msg.Attachment); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case tea.MouseClickMsg:
 		// Pass mouse events to dialogs first if any are open.
 		if m.dialog.HasDialogs() {
@@ -680,6 +787,18 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if cmd := m.handleClickFocus(msg); cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+
+		if len(m.attachments.List()) > 0 {
+			editorRect := m.layout.editor
+			if m.state == uiLanding {
+				editorRect = m.landingEditorRect
+			}
+			if msg.Y == editorRect.Min.Y {
+				if m.attachments.HandleClick(msg.X - editorRect.Min.X) {
+					return m, tea.Batch(cmds...)
+				}
+			}
 		}
 
 		switch m.state {
@@ -716,6 +835,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
 						cmds = append(cmds, cmd)
 					}
+				}
+				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
+					cmds = append(cmds, cmd)
 				}
 			} else if msg.Y >= m.chat.Height()-1 {
 				if cmd := m.chat.ScrollByAndAnimate(1); cmd != nil {
@@ -774,24 +896,17 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, cmd)
 				}
 				if !m.chat.SelectedItemInView() {
-					m.chat.SelectPrev()
-					if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
-						cmds = append(cmds, cmd)
-					}
+					m.chat.SelectFirstInView()
+				}
+				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
+					cmds = append(cmds, cmd)
 				}
 			case tea.MouseWheelDown:
 				if cmd := m.chat.ScrollByAndAnimate(MouseScrollThreshold); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 				if !m.chat.SelectedItemInView() {
-					if m.chat.AtBottom() {
-						m.chat.SelectLast()
-					} else {
-						m.chat.SelectNext()
-					}
-					if cmd := m.chat.ScrollToSelectedAndAnimate(); cmd != nil {
-						cmds = append(cmds, cmd)
-					}
+					m.chat.SelectLastInView()
 				}
 			}
 		}
@@ -810,6 +925,13 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dialog.HasDialogs() {
 			// route to dialog
 			if cmd := m.handleDialogMsg(msg); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if m.loadingSession {
+			var cmd tea.Cmd
+			m.loadingSpinner, cmd = m.loadingSpinner.Update(msg)
+			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 		}
@@ -879,60 +1001,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// at this point this can only handle [message.Attachment] message, and we
 	// should return all cmds anyway.
-	_ = m.attachments.Update(msg)
+	m.attachments.Update(msg)
 	return m, tea.Batch(cmds...)
-}
-
-// setSessionMessages sets the messages for the current session in the chat
-func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
-	var cmds []tea.Cmd
-	// Build tool result map to link tool calls with their results
-	msgPtrs := make([]*message.Message, len(msgs))
-	for i := range msgs {
-		msgPtrs[i] = &msgs[i]
-	}
-	toolResultMap := chat.BuildToolResultMap(msgPtrs)
-	if len(msgPtrs) > 0 {
-		m.lastUserMessageTime = msgPtrs[0].CreatedAt
-	}
-
-	// Add messages to chat with linked tool results
-	items := make([]chat.MessageItem, 0, len(msgs)*2)
-	for _, msg := range msgPtrs {
-		switch msg.Role {
-		case message.User:
-			m.lastUserMessageTime = msg.CreatedAt
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
-		case message.Assistant:
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
-			if msg.FinishPart() != nil && msg.FinishPart().Reason == message.FinishReasonEndTurn {
-				infoItem := chat.NewAssistantInfoItem(m.com.Styles, msg, m.com.Config(), time.Unix(m.lastUserMessageTime, 0))
-				items = append(items, infoItem)
-			}
-		default:
-			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap)...)
-		}
-	}
-
-	// Load nested tool calls for agent/agentic_fetch tools.
-	m.loadNestedToolCalls(items)
-
-	// If the user switches between sessions while the agent is working we want
-	// to make sure the animations are shown.
-	for _, item := range items {
-		if animatable, ok := item.(chat.Animatable); ok {
-			if cmd := animatable.StartAnimation(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
-	}
-
-	m.chat.SetMessages(items...)
-	if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
-	m.chat.SelectLast()
-	return tea.Sequence(cmds...)
 }
 
 // loadNestedToolCalls recursively loads nested tool calls for agent/agentic_fetch tools.
@@ -993,6 +1063,16 @@ func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
 	}
 }
 
+// maybeLoadMoreHistory checks if the chat is scrolled to the top and there
+// are older messages available. If so, it fires a command to load more turns.
+func (m *UI) maybeLoadMoreHistory() tea.Cmd {
+	if !m.chat.AtTop() || m.loadingHistory || (!m.historyHasMore && len(m.remainingItems) == 0) {
+		return nil
+	}
+	m.loadingHistory = true
+	return m.loadMoreHistory()
+}
+
 // appendSessionMessage appends a new message to the current session in the chat
 // if the message is a tool result it will update the corresponding tool call message
 func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
@@ -1045,13 +1125,16 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 		}
 	case message.Tool:
 		for _, tr := range msg.ToolResults() {
+			tr := tr
+			m.updatePlanMode(tr)
 			toolItem := m.chat.MessageItem(tr.ToolCallID)
 			if toolItem == nil {
-				// we should have an item!
+				m.pendingToolResults[tr.ToolCallID] = &tr
 				continue
 			}
 			if toolMsgItem, ok := toolItem.(chat.ToolMessageItem); ok {
 				toolMsgItem.SetResult(&tr)
+				m.chat.InvalidateItemHeight(tr.ToolCallID)
 				if m.chat.Follow() {
 					if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
 						cmds = append(cmds, cmd)
@@ -1091,6 +1174,7 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 	if existingItem != nil {
 		if assistantItem, ok := existingItem.(*chat.AssistantMessageItem); ok {
 			assistantItem.SetMessage(&msg)
+			m.chat.InvalidateItemHeight(msg.ID)
 		}
 	}
 
@@ -1119,10 +1203,13 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 			// to avoid clearing the cache
 			if (tc.Finished && !existingToolCall.Finished) || tc.Input != existingToolCall.Input {
 				toolItem.SetToolCall(tc)
+				m.chat.InvalidateItemHeight(tc.ID)
 			}
 		}
 		if existingToolItem == nil {
-			items = append(items, chat.NewToolMessageItem(m.com.Styles, msg.ID, tc, nil, false))
+			pendingResult := m.pendingToolResults[tc.ID]
+			delete(m.pendingToolResults, tc.ID)
+			items = append(items, chat.NewToolMessageItem(m.com.Styles, msg.ID, tc, pendingResult, false))
 		}
 	}
 
@@ -1163,18 +1250,12 @@ func (m *UI) handleChildSessionMessage(event pubsub.Event[message.Message]) tea.
 
 	// Find the parent agent tool item.
 	var agentItem chat.NestedToolContainer
-	for i := 0; i < m.chat.Len(); i++ {
-		item := m.chat.MessageItem(toolCallID)
-		if item == nil {
-			continue
-		}
+	item := m.chat.MessageItem(toolCallID)
+	if item != nil {
 		if agent, ok := item.(chat.NestedToolContainer); ok {
 			if toolMessageItem, ok := item.(chat.ToolMessageItem); ok {
 				if toolMessageItem.ToolCall().ID == toolCallID {
-					// Verify this agent belongs to the correct parent message.
-					// We can't directly check parentMessageID on the item, so we trust the session parsing.
 					agentItem = agent
-					break
 				}
 			}
 		}
@@ -1224,6 +1305,7 @@ func (m *UI) handleChildSessionMessage(event pubsub.Event[message.Message]) tea.
 
 	// Update the agent item with the new nested tools.
 	agentItem.SetNestedTools(nestedTools)
+	m.chat.InvalidateItemHeight(toolCallID)
 
 	// Update the chat so it updates the index map for animations to work as expected
 	m.chat.UpdateNestedToolIDs(toolCallID)
@@ -1453,7 +1535,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 		cmds = append(cmds, func() tea.Msg {
 			if err := m.com.App.UpdateAgentModel(context.TODO()); err != nil {
-				return util.ReportError(err)
+				return util.ReportError(err)()
 			}
 
 			modelMsg := fmt.Sprintf("%s model changed to %s", msg.ModelType, msg.Model.Model)
@@ -1498,7 +1580,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 
 		cmds = append(cmds, func() tea.Msg {
-			m.com.App.UpdateAgentModel(context.TODO())
+			if err := m.com.App.UpdateAgentModel(context.TODO()); err != nil {
+				return util.ReportError(err)()
+			}
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		})
 		m.dialog.CloseDialog(dialog.ReasoningID)
@@ -1512,6 +1596,10 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		case dialog.PermissionDeny:
 			m.com.App.Permissions.Deny(msg.Permission)
 		}
+
+	case dialog.ActionAskUserResponse:
+		m.dialog.CloseDialog(dialog.AskUserID)
+		m.com.App.AskUser.Respond(msg.Request.ID, msg.Answers)
 
 	case dialog.ActionFilePickerSelected:
 		cmds = append(cmds, tea.Sequence(
@@ -1651,6 +1739,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 				return true
 			}
+		case key.Matches(msg, m.keyMap.YoloMode):
+			yolo := !m.com.App.Permissions.SkipRequests()
+			m.com.App.Permissions.SetSkipRequests(yolo)
+			m.setEditorPrompt(yolo)
+			return true
 		case key.Matches(msg, m.keyMap.Suspend):
 			if m.isAgentBusy() {
 				cmds = append(cmds, util.ReportWarn("Agent is busy, please wait..."))
@@ -1716,7 +1809,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 			}
 
-			if ok := m.attachments.Update(msg); ok {
+			if m.attachments.Update(msg) {
 				return tea.Batch(cmds...)
 			}
 
@@ -1727,7 +1820,8 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 
 			case key.Matches(msg, m.keyMap.Editor.PasteImage):
-				cmds = append(cmds, m.pasteImageFromClipboard)
+				idx := m.pasteIdx()
+				cmds = append(cmds, func() tea.Msg { return m.pasteImageFromClipboard(idx) })
 
 			case key.Matches(msg, m.keyMap.Editor.SendMessage):
 				prevHeight := m.textarea.Height()
@@ -1780,7 +1874,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					m.chat.Focus()
 					m.chat.SetSelected(m.chat.Len() - 1)
 				}
-			case key.Matches(msg, m.keyMap.Editor.OpenEditor):
+			case msg.Keystroke() == "alt+shift+e":
 				if m.isAgentBusy() {
 					cmds = append(cmds, util.ReportWarn("Agent is working, please wait..."))
 					break
@@ -1801,6 +1895,18 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
+			case key.Matches(msg, m.keyMap.Editor.PrevUserMessage):
+				m.chat.SelectPrevUserMessage()
+				m.chat.ScrollToSelected()
+				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			case key.Matches(msg, m.keyMap.Editor.NextUserMessage):
+				m.chat.SelectNextUserMessage()
+				m.chat.ScrollToSelected()
+			case key.Matches(msg, m.keyMap.Editor.ScrollToEnd):
+				m.chat.ScrollToBottom()
+				m.chat.SelectLast()
 			case key.Matches(msg, m.keyMap.Editor.Escape):
 				cmd := m.handleHistoryEscape(msg)
 				if cmd != nil {
@@ -1899,6 +2005,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 						cmds = append(cmds, cmd)
 					}
 				}
+				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Chat.Down):
 				if cmd := m.chat.ScrollByAndAnimate(1); cmd != nil {
 					cmds = append(cmds, cmd)
@@ -1924,6 +2033,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 				m.chat.SelectFirstInView()
+				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Chat.HalfPageDown):
 				if cmd := m.chat.ScrollByAndAnimate(m.chat.Height() / 2); cmd != nil {
 					cmds = append(cmds, cmd)
@@ -1934,6 +2046,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 				m.chat.SelectFirstInView()
+				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Chat.PageDown):
 				if cmd := m.chat.ScrollByAndAnimate(m.chat.Height()); cmd != nil {
 					cmds = append(cmds, cmd)
@@ -1944,6 +2059,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 				m.chat.SelectFirst()
+				if cmd := m.maybeLoadMoreHistory(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case key.Matches(msg, m.keyMap.Chat.End):
 				if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
 					cmds = append(cmds, cmd)
@@ -1987,8 +2105,13 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		m.updateSize()
 	}
 
-	// Clear the screen first
-	screen.Clear(scr)
+	// Fill the screen with the app background color.
+	if !m.isTransparent {
+		bgCell := &uv.Cell{Content: " ", Width: 1, Style: uv.Style{Bg: m.com.Styles.Background}}
+		screen.Fill(scr, bgCell)
+	} else {
+		screen.Clear(scr)
+	}
 
 	switch m.state {
 	case uiOnboarding:
@@ -1998,18 +2121,58 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		// positioned at the bottom left of the screen.
 
 	case uiInitialize:
-		m.drawHeader(scr, layout.header)
+		const landingPad = 3
+		landingWidth := min(90, max(landingPad*2+20, area.Dx()-4))
+		innerWidth := landingWidth - landingPad*2
+		landingStr := m.landingView(innerWidth)
+		initStr := m.initializeView(innerWidth)
+		helpStr := m.com.Styles.Status.Help.Width(innerWidth).Render(m.status.help.View(m.status.helpKm))
+		inner := lipgloss.JoinVertical(lipgloss.Left, landingStr, "", initStr, "", helpStr)
+		combined := lipgloss.NewStyle().Padding(1, landingPad).Width(landingWidth).Render(inner)
+		combinedW := lipgloss.Width(combined)
+		combinedH := lipgloss.Height(combined)
+		centerArea := layout.header.Union(layout.main).Union(layout.status)
+		dialogRect := common.CenterRect(centerArea, combinedW, combinedH)
+		uv.NewStyledString(combined).Draw(scr, dialogRect)
 
-		main := uv.NewStyledString(m.initializeView())
-		main.Draw(scr, layout.main)
+		layout.status = image.Rectangle{}
 
 	case uiLanding:
-		m.drawHeader(scr, layout.header)
-		main := uv.NewStyledString(m.landingView())
-		main.Draw(scr, layout.main)
+		const landingPad = 3
+		landingWidth := min(90, max(landingPad*2+20, area.Dx()-4))
+		innerWidth := landingWidth - landingPad*2
+		landingStr := m.landingView(innerWidth)
 
-		editor := uv.NewStyledString(m.renderEditorView(scr.Bounds().Dx()))
-		editor.Draw(scr, layout.editor)
+		var belowLanding string
+		if m.loadingSession {
+			belowLanding = m.landingLoadingView(innerWidth)
+		} else {
+			belowLanding = m.renderEditorView(innerWidth)
+		}
+
+		helpStr := m.com.Styles.Status.Help.Width(innerWidth).Render(m.status.help.View(m.status.helpKm))
+		inner := lipgloss.JoinVertical(lipgloss.Left, landingStr, "", belowLanding, "", helpStr)
+		combined := lipgloss.NewStyle().Padding(1, landingPad).Width(landingWidth).Render(inner)
+		combinedW := lipgloss.Width(combined)
+		combinedH := lipgloss.Height(combined)
+		centerArea := layout.header.Union(layout.main).Union(layout.status)
+		dialogRect := common.CenterRect(centerArea, combinedW, combinedH)
+		uv.NewStyledString(combined).Draw(scr, dialogRect)
+
+		if !m.loadingSession {
+			landingH := lipgloss.Height(landingStr)
+			editorH := lipgloss.Height(belowLanding)
+			// Editor rect accounts for top padding (1) + landing + blank line.
+			editorTop := dialogRect.Min.Y + 1 + landingH + 1
+			m.landingEditorRect = image.Rect(
+				dialogRect.Min.X+landingPad,
+				editorTop,
+				dialogRect.Max.X-landingPad,
+				editorTop+editorH,
+			)
+		}
+
+		layout.status = image.Rectangle{}
 
 	case uiChat:
 		if m.isCompact {
@@ -2023,10 +2186,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 			uv.NewStyledString(m.pillsView).Draw(scr, layout.pills)
 		}
 
-		editorWidth := scr.Bounds().Dx()
-		if !m.isCompact {
-			editorWidth -= layout.sidebar.Dx()
-		}
+		editorWidth := layout.editor.Dx()
 		editor := uv.NewStyledString(m.renderEditorView(editorWidth))
 		editor.Draw(scr, layout.editor)
 
@@ -2081,6 +2241,9 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	switch m.focus {
 	case uiFocusEditor:
+		if m.state == uiInitialize {
+			return nil
+		}
 		if m.layout.editor.Dy() <= 0 {
 			// Don't show cursor if editor is not visible
 			return nil
@@ -2092,8 +2255,12 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 		if m.textarea.Focused() {
 			cur := m.textarea.Cursor()
-			cur.X++                            // Adjust for app margins
-			cur.Y += m.layout.editor.Min.Y + 1 // Offset for attachments row
+			editorRect := m.layout.editor
+			if m.state == uiLanding {
+				editorRect = m.landingEditorRect
+			}
+			cur.X += editorRect.Min.X     // Adjust for sidebar + app margins
+			cur.Y += editorRect.Min.Y + 1 // Offset for attachments row
 			return cur
 		}
 	}
@@ -2417,7 +2584,11 @@ func (m *UI) updateTextareaWithPrevHeight(msg tea.Msg, prevHeight int) tea.Cmd {
 // updateSize updates the sizes of UI components based on the current layout.
 func (m *UI) updateSize() {
 	// Set status width
-	m.status.SetWidth(m.layout.status.Dx())
+	if m.state == uiLanding || m.state == uiInitialize {
+		m.status.SetWidth(m.layout.editor.Dx())
+	} else {
+		m.status.SetWidth(m.layout.status.Dx())
+	}
 
 	m.chat.SetSize(m.layout.main.Dx(), m.layout.main.Dy())
 	m.textarea.MaxHeight = TextareaMaxHeight
@@ -2443,8 +2614,8 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 	helpHeight := 1
 	// The editor height: textarea height + margin for attachments and bottom spacing.
 	editorHeight := m.textarea.Height() + editorHeightMargin
-	// The sidebar width
-	sidebarWidth := 30
+	// The sidebar width as a percentage of the total width.
+	const sidebarPercent = 25
 	// The header height
 	const landingHeaderHeight = 4
 
@@ -2456,7 +2627,8 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 	}
 
 	// Add app margins
-	appRect, helpRect := layout.SplitVertical(area, layout.Fixed(area.Dy()-helpHeight))
+	appHelpSplit := layoutpkg.Vertical(layoutpkg.Len(area.Dy()-helpHeight), layoutpkg.Fill(1)).Split(area)
+	appRect, helpRect := appHelpSplit[0], appHelpSplit[1]
 	appRect.Min.Y += 1
 	appRect.Max.Y -= 1
 	helpRect.Min.Y -= 1
@@ -2476,7 +2648,7 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 
 	// Handle different app states
 	switch m.state {
-	case uiOnboarding, uiInitialize:
+	case uiOnboarding:
 		// Layout
 		//
 		// header
@@ -2485,28 +2657,20 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 		// ------
 		// help
 
-		headerRect, mainRect := layout.SplitVertical(appRect, layout.Fixed(landingHeaderHeight))
+		hmSplit := layoutpkg.Vertical(layoutpkg.Len(landingHeaderHeight), layoutpkg.Fill(1)).Split(appRect)
+		headerRect, mainRect := hmSplit[0], hmSplit[1]
 		uiLayout.header = headerRect
 		uiLayout.main = mainRect
 
-	case uiLanding:
-		// Layout
-		//
-		// header
-		// ------
-		// main
-		// ------
-		// editor
-		// ------
-		// help
-		headerRect, mainRect := layout.SplitVertical(appRect, layout.Fixed(landingHeaderHeight))
-		mainRect, editorRect := layout.SplitVertical(mainRect, layout.Fixed(mainRect.Dy()-editorHeight))
-		// Remove extra padding from editor (but keep it for header and main)
-		editorRect.Min.X -= 1
-		editorRect.Max.X += 1
-		uiLayout.header = headerRect
-		uiLayout.main = mainRect
-		uiLayout.editor = editorRect
+	case uiInitialize, uiLanding:
+		uiLayout.header = appRect
+		uiLayout.main = appRect
+		const landingPad = 3
+		innerWidth := min(90, max(landingPad*2+20, appRect.Dx()-4)) - landingPad*2
+		uiLayout.editor = image.Rect(
+			appRect.Min.X, appRect.Max.Y-editorHeight,
+			appRect.Min.X+innerWidth, appRect.Max.Y,
+		)
 
 	case uiChat:
 		if m.isCompact {
@@ -2520,20 +2684,23 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			// ------
 			// help
 			const compactHeaderHeight = 1
-			headerRect, mainRect := layout.SplitVertical(appRect, layout.Fixed(compactHeaderHeight))
+			hmSplit := layoutpkg.Vertical(layoutpkg.Len(compactHeaderHeight), layoutpkg.Fill(1)).Split(appRect)
+			headerRect, mainRect := hmSplit[0], hmSplit[1]
 			detailsHeight := min(sessionDetailsMaxHeight, area.Dy()-1) // One row for the header
-			sessionDetailsArea, _ := layout.SplitVertical(appRect, layout.Fixed(detailsHeight))
+			sessionDetailsArea := layoutpkg.Vertical(layoutpkg.Len(detailsHeight), layoutpkg.Fill(1)).Split(appRect)[0]
 			uiLayout.sessionDetails = sessionDetailsArea
 			uiLayout.sessionDetails.Min.Y += compactHeaderHeight // adjust for header
 			// Add one line gap between header and main content
 			mainRect.Min.Y += 1
-			mainRect, editorRect := layout.SplitVertical(mainRect, layout.Fixed(mainRect.Dy()-editorHeight))
+			meSplit := layoutpkg.Vertical(layoutpkg.Len(mainRect.Dy()-editorHeight), layoutpkg.Fill(1)).Split(mainRect)
+			mainRect, editorRect := meSplit[0], meSplit[1]
 			mainRect.Max.X -= 1 // Add padding right
 			uiLayout.header = headerRect
 			pillsHeight := m.pillsAreaHeight()
 			if pillsHeight > 0 {
 				pillsHeight = min(pillsHeight, mainRect.Dy())
-				chatRect, pillsRect := layout.SplitVertical(mainRect, layout.Fixed(mainRect.Dy()-pillsHeight))
+				cpSplit := layoutpkg.Vertical(layoutpkg.Len(mainRect.Dy()-pillsHeight), layoutpkg.Fill(1)).Split(mainRect)
+				chatRect, pillsRect := cpSplit[0], cpSplit[1]
 				uiLayout.main = chatRect
 				uiLayout.pills = pillsRect
 			} else {
@@ -2545,23 +2712,35 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 		} else {
 			// Layout
 			//
-			// ------|---
-			// main  |
-			// ------| side
-			// editor|
-			// ----------
-			// help
+			// ----|--------
+			//     |  main
+			// side|--------
+			//     | editor
+			// ----|--------
+			//     |  help
 
-			mainRect, sideRect := layout.SplitHorizontal(appRect, layout.Fixed(appRect.Dx()-sidebarWidth))
-			// Add padding left
-			sideRect.Min.X += 1
-			mainRect, editorRect := layout.SplitVertical(mainRect, layout.Fixed(mainRect.Dy()-editorHeight))
-			mainRect.Max.X -= 1 // Add padding right
-			uiLayout.sidebar = sideRect
+			scSplit := layoutpkg.Horizontal(layoutpkg.Percent(sidebarPercent), layoutpkg.Fill(1)).Split(appRect)
+			sideRect, contentRect := scSplit[0], scSplit[1]
+			sideRect.Max.X -= 1    // padding right for visual separation
+			contentRect.Min.X += 1 // padding left for visual separation
+
+			// Sidebar spans full height including help bar area.
+			fullSideRect := sideRect
+			fullSideRect.Min.Y = uiLayout.area.Min.Y
+			fullSideRect.Max.Y = uiLayout.area.Max.Y
+			uiLayout.sidebar = fullSideRect
+
+			// Narrow the status bar to only span the right content area.
+			uiLayout.status.Min.X = contentRect.Min.X
+			uiLayout.status.Max.X = contentRect.Max.X
+
+			meSplit := layoutpkg.Vertical(layoutpkg.Len(contentRect.Dy()-editorHeight), layoutpkg.Fill(1)).Split(contentRect)
+			mainRect, editorRect := meSplit[0], meSplit[1]
 			pillsHeight := m.pillsAreaHeight()
 			if pillsHeight > 0 {
 				pillsHeight = min(pillsHeight, mainRect.Dy())
-				chatRect, pillsRect := layout.SplitVertical(mainRect, layout.Fixed(mainRect.Dy()-pillsHeight))
+				cpSplit := layoutpkg.Vertical(layoutpkg.Len(mainRect.Dy()-pillsHeight), layoutpkg.Fill(1)).Split(mainRect)
+				chatRect, pillsRect := cpSplit[0], cpSplit[1]
 				uiLayout.main = chatRect
 				uiLayout.pills = pillsRect
 			} else {
@@ -2614,6 +2793,7 @@ func (m *UI) openEditor(value string) tea.Cmd {
 	tmpPath := tmpfile.Name()
 	defer tmpfile.Close() //nolint:errcheck
 	if _, err := tmpfile.WriteString(value); err != nil {
+		_ = os.Remove(tmpPath)
 		return util.ReportError(err)
 	}
 	cmd, err := editor.Command(
@@ -2625,6 +2805,7 @@ func (m *UI) openEditor(value string) tea.Cmd {
 		),
 	)
 	if err != nil {
+		_ = os.Remove(tmpPath)
 		return util.ReportError(err)
 	}
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
@@ -2725,22 +2906,27 @@ func (m *UI) insertFileCompletion(path string) tea.Cmd {
 	}
 	heightCmd := m.handleTextareaHeightChange(prevHeight)
 
+	hasSession := m.hasSession()
+	var sessionID string
+	if hasSession {
+		sessionID = m.session.ID
+	}
+	sessionReads := slices.Clone(m.sessionFileReads)
+
 	fileCmd := func() tea.Msg {
 		absPath, _ := filepath.Abs(path)
 
-		if m.hasSession() {
+		if hasSession {
 			// Skip attachment if file was already read and hasn't been modified.
-			lastRead := m.com.App.FileTracker.LastReadTime(context.Background(), m.session.ID, absPath)
+			lastRead := m.com.App.FileTracker.LastReadTime(context.Background(), sessionID, absPath)
 			if !lastRead.IsZero() {
 				if info, err := os.Stat(path); err == nil && !info.ModTime().After(lastRead) {
 					return nil
 				}
 			}
-		} else if slices.Contains(m.sessionFileReads, absPath) {
+		} else if slices.Contains(sessionReads, absPath) {
 			return nil
 		}
-
-		m.sessionFileReads = append(m.sessionFileReads, absPath)
 
 		// Add file as attachment.
 		content, err := os.ReadFile(path)
@@ -2749,11 +2935,14 @@ func (m *UI) insertFileCompletion(path string) tea.Cmd {
 			return nil
 		}
 
-		return message.Attachment{
-			FilePath: path,
-			FileName: filepath.Base(path),
-			MimeType: mimeOf(content),
-			Content:  content,
+		return insertFileCompletionMsg{
+			AbsPath: absPath,
+			Attachment: message.Attachment{
+				FilePath: path,
+				FileName: filepath.Base(path),
+				MimeType: mimeOf(content),
+				Content:  content,
+			},
 		}
 	}
 	return tea.Batch(heightCmd, fileCmd)
@@ -2817,15 +3006,19 @@ func (m *UI) insertMCPResourceCompletion(item completions.ResourceCompletionValu
 // completionsPosition returns the X and Y position for the completions popup.
 func (m *UI) completionsPosition() image.Point {
 	cur := m.textarea.Cursor()
+	editorRect := m.layout.editor
+	if m.state == uiLanding {
+		editorRect = m.landingEditorRect
+	}
 	if cur == nil {
 		return image.Point{
-			X: m.layout.editor.Min.X,
-			Y: m.layout.editor.Min.Y,
+			X: editorRect.Min.X,
+			Y: editorRect.Min.Y,
 		}
 	}
 	return image.Point{
-		X: cur.X + m.layout.editor.Min.X,
-		Y: m.layout.editor.Min.Y + cur.Y,
+		X: cur.X + editorRect.Min.X,
+		Y: editorRect.Min.Y + cur.Y,
 	}
 }
 
@@ -2850,6 +3043,24 @@ func (m *UI) isAgentBusy() bool {
 // hasSession returns true if there is an active session with a valid ID.
 func (m *UI) hasSession() bool {
 	return m.session != nil && m.session.ID != ""
+}
+
+// syncTmuxSessionID sets (or clears) the @crush_session pane user option so
+// that external scripts can discover which session this instance is using.
+// It is a silent no-op when not running inside tmux.
+func (m *UI) syncTmuxSessionID() {
+	if os.Getenv("TMUX") == "" {
+		return
+	}
+	var val string
+	if m.session != nil && m.session.ID != "" {
+		val = m.session.ID
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "tmux", "set-option", "-p", "@crush_session", val).Run()
+	}()
 }
 
 // mimeOf detects the MIME type of the given content.
@@ -2916,22 +3127,24 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 		}
 		if newSession.ID != "" {
 			m.session = &newSession
+			m.syncTmuxSessionID()
 			cmds = append(cmds, m.loadSession(newSession.ID))
 		}
 		m.setState(uiChat, m.focus)
 	}
 
 	ctx := context.Background()
+	fileReads := slices.Clone(m.sessionFileReads)
+	sessionID := m.session.ID
 	cmds = append(cmds, func() tea.Msg {
-		for _, path := range m.sessionFileReads {
-			m.com.App.FileTracker.RecordRead(ctx, m.session.ID, path)
+		for _, path := range fileReads {
+			m.com.App.FileTracker.RecordRead(ctx, sessionID, path)
 			m.com.App.LSPManager.Start(ctx, path)
 		}
 		return nil
 	})
 
 	// Capture session ID to avoid race with main goroutine updating m.session.
-	sessionID := m.session.ID
 	cmds = append(cmds, func() tea.Msg {
 		_, err := m.com.App.AgentCoordinator.Run(context.Background(), sessionID, content, attachments...)
 		if err != nil {
@@ -3039,6 +3252,15 @@ func (m *UI) openQuitDialog() tea.Cmd {
 	quitDialog := dialog.NewQuit(m.com)
 	m.dialog.OpenDialog(quitDialog)
 	return nil
+}
+
+// openImagePreviewDialog opens the image preview dialog for the given
+// attachment.
+func (m *UI) openImagePreviewDialog(att message.Attachment) tea.Cmd {
+	m.dialog.CloseDialog(dialog.ImagePreviewID)
+	d, cmd := dialog.NewImagePreview(m.com, att, &m.caps)
+	m.dialog.OpenDialog(d)
+	return cmd
 }
 
 // openModelsDialog opens the models dialog.
@@ -3157,6 +3379,15 @@ func (m *UI) openPermissionsDialog(perm permission.PermissionRequest) tea.Cmd {
 	return nil
 }
 
+// openAskUserDialog opens the ask_user dialog for an agent question.
+func (m *UI) openAskUserDialog(req askuser.QuestionRequest) {
+	if m.dialog.ContainsDialog(dialog.AskUserID) {
+		return
+	}
+	askDialog := dialog.NewAskUser(m.com, req)
+	m.dialog.OpenDialog(askDialog)
+}
+
 // handlePermissionNotification updates tool items when permission state changes.
 func (m *UI) handlePermissionNotification(notification permission.PermissionNotification) {
 	toolItem := m.chat.MessageItem(notification.ToolCallID)
@@ -3170,6 +3401,7 @@ func (m *UI) handlePermissionNotification(notification permission.PermissionNoti
 		} else {
 			permItem.SetStatus(chat.ToolStatusAwaitingPermission)
 		}
+		m.chat.InvalidateItemHeight(notification.ToolCallID)
 	}
 }
 
@@ -3196,15 +3428,18 @@ func (m *UI) newSession() tea.Cmd {
 	}
 
 	m.session = nil
+	m.syncTmuxSessionID()
 	m.sessionFiles = nil
 	m.sessionFileReads = nil
 	m.setState(uiLanding, uiFocusEditor)
 	m.textarea.Focus()
 	m.chat.Blur()
 	m.chat.ClearMessages()
+	m.planMode = false
 	m.pillsExpanded = false
 	m.promptQueue = 0
 	m.pillsView = ""
+	m.pendingToolResults = make(map[string]*message.ToolResult)
 	m.historyReset()
 	agenttools.ResetCache()
 	return tea.Batch(
@@ -3227,12 +3462,18 @@ func (m *UI) handlePasteMsg(msg tea.PasteMsg) tea.Cmd {
 	}
 
 	if hasPasteExceededThreshold(msg) {
+		idx := m.pasteIdx()
 		return func() tea.Msg {
 			content := []byte(msg.Content)
 			if int64(len(content)) > common.MaxAttachmentSize {
 				return util.ReportWarn("Paste is too big (>5mb)")
 			}
-			name := fmt.Sprintf("paste_%d.txt", m.pasteIdx())
+
+			if att, ok := tryParseBase64Image(strings.TrimSpace(msg.Content), idx); ok {
+				return att
+			}
+
+			name := fmt.Sprintf("paste_%d.txt", idx)
 			mimeBufferSize := min(512, len(content))
 			mimeType := http.DetectContentType(content[:mimeBufferSize])
 			return message.Attachment{
@@ -3242,6 +3483,10 @@ func (m *UI) handlePasteMsg(msg tea.PasteMsg) tea.Cmd {
 				Content:  content,
 			}
 		}
+	}
+
+	if att, ok := tryParseBase64Image(strings.TrimSpace(msg.Content), m.pasteIdx()); ok {
+		return func() tea.Msg { return att }
 	}
 
 	// Attempt to parse pasted content as file paths. If possible to parse,
@@ -3332,17 +3577,17 @@ func (m *UI) handleFilePathPaste(path string) tea.Cmd {
 
 // pasteImageFromClipboard reads image data from the system clipboard and
 // creates an attachment. If no image data is found, it falls back to
-// interpreting clipboard text as a file path.
-func (m *UI) pasteImageFromClipboard() tea.Msg {
+// interpreting clipboard text as a file path, or pastes text into the textarea.
+func (m *UI) pasteImageFromClipboard(idx int) tea.Msg {
 	imageData, err := readClipboard(clipboardFormatImage)
-	if int64(len(imageData)) > common.MaxAttachmentSize {
-		return util.InfoMsg{
-			Type: util.InfoTypeError,
-			Msg:  "File too large, max 5MB",
+	if err == nil && len(imageData) > 0 {
+		if int64(len(imageData)) > common.MaxAttachmentSize {
+			return util.InfoMsg{
+				Type: util.InfoTypeError,
+				Msg:  "File too large, max 5MB",
+			}
 		}
-	}
-	name := fmt.Sprintf("paste_%d.png", m.pasteIdx())
-	if err == nil {
+		name := fmt.Sprintf("paste_%d.png", idx)
 		return message.Attachment{
 			FilePath: name,
 			FileName: name,
@@ -3353,32 +3598,35 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 
 	textData, textErr := readClipboard(clipboardFormatText)
 	if textErr != nil || len(textData) == 0 {
-		return nil // Clipboard is empty or does not contain an image
+		return nil
 	}
 
-	path := strings.TrimSpace(string(textData))
-	path = strings.ReplaceAll(path, "\\ ", " ")
-	if _, statErr := os.Stat(path); statErr != nil {
-		return nil // Clipboard does not contain an image or valid file path
+	text := strings.TrimSpace(string(textData))
+
+	if att, ok := tryParseBase64Image(text, idx); ok {
+		return att
 	}
 
-	lowerPath := strings.ToLower(path)
-	isAllowed := false
-	for _, ext := range common.AllowedImageTypes {
-		if strings.HasSuffix(lowerPath, ext) {
-			isAllowed = true
-			break
+	path := strings.ReplaceAll(text, "\\ ", " ")
+	if _, statErr := os.Stat(path); statErr == nil {
+		lowerPath := strings.ToLower(path)
+		for _, ext := range common.AllowedImageTypes {
+			if strings.HasSuffix(lowerPath, ext) {
+				return m.loadImageAttachment(path)
+			}
 		}
 	}
-	if !isAllowed {
-		return util.NewInfoMsg("File type is not a supported image format")
-	}
 
-	fileInfo, statErr := os.Stat(path)
-	if statErr != nil {
+	return tea.PasteMsg{Content: string(textData)}
+}
+
+// loadImageAttachment reads an image file and returns it as an attachment.
+func (m *UI) loadImageAttachment(path string) tea.Msg {
+	fileInfo, err := os.Stat(path)
+	if err != nil {
 		return util.InfoMsg{
 			Type: util.InfoTypeError,
-			Msg:  fmt.Sprintf("Unable to read file: %v", statErr),
+			Msg:  fmt.Sprintf("Unable to read file: %v", err),
 		}
 	}
 	if fileInfo.Size() > common.MaxAttachmentSize {
@@ -3387,15 +3635,13 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 			Msg:  "File too large, max 5MB",
 		}
 	}
-
-	content, readErr := os.ReadFile(path)
-	if readErr != nil {
+	content, err := os.ReadFile(path)
+	if err != nil {
 		return util.InfoMsg{
 			Type: util.InfoTypeError,
-			Msg:  fmt.Sprintf("Unable to read file: %v", readErr),
+			Msg:  fmt.Sprintf("Unable to read file: %v", err),
 		}
 	}
-
 	return message.Attachment{
 		FilePath: path,
 		FileName: filepath.Base(path),
@@ -3404,7 +3650,63 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 	}
 }
 
-var pasteRE = regexp.MustCompile(`paste_(\d+).txt`)
+// dataURIRegexp matches data:image/<type>;base64,<data> URIs.
+var dataURIRegexp = regexp.MustCompile(`^data:image/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=\s]+)$`)
+
+// tryParseBase64Image attempts to parse a string as a base64-encoded image.
+// Supports data URIs (data:image/png;base64,...) and raw base64 strings.
+func tryParseBase64Image(text string, idx int) (message.Attachment, bool) {
+	var imageData []byte
+	var mimeType string
+
+	if m := dataURIRegexp.FindStringSubmatch(text); m != nil {
+		decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(m[2], " ", ""))
+		if err != nil {
+			return message.Attachment{}, false
+		}
+		imageData = decoded
+		mimeType = "image/" + m[1]
+	} else if len(text) > 100 && !strings.ContainsAny(text, " \t\n{}()<>") {
+		decoded, err := base64.StdEncoding.DecodeString(text)
+		if err != nil {
+			return message.Attachment{}, false
+		}
+		detected := http.DetectContentType(decoded[:min(512, len(decoded))])
+		if !strings.HasPrefix(detected, "image/") {
+			return message.Attachment{}, false
+		}
+		imageData = decoded
+		mimeType = detected
+	}
+
+	if imageData == nil {
+		return message.Attachment{}, false
+	}
+
+	if int64(len(imageData)) > common.MaxAttachmentSize {
+		return message.Attachment{}, false
+	}
+
+	ext := ".png"
+	switch {
+	case strings.Contains(mimeType, "jpeg") || strings.Contains(mimeType, "jpg"):
+		ext = ".jpg"
+	case strings.Contains(mimeType, "gif"):
+		ext = ".gif"
+	case strings.Contains(mimeType, "webp"):
+		ext = ".webp"
+	}
+	name := fmt.Sprintf("paste_%d%s", idx, ext)
+
+	return message.Attachment{
+		FilePath: name,
+		FileName: name,
+		MimeType: mimeType,
+		Content:  imageData,
+	}, true
+}
+
+var pasteRE = regexp.MustCompile(`paste_(\d+)\.\w+`)
 
 func (m *UI) pasteIdx() int {
 	result := 0
@@ -3500,7 +3802,9 @@ func (m *UI) runMCPPrompt(clientID, promptID string, arguments map[string]string
 
 func (m *UI) handleStateChanged() tea.Cmd {
 	return func() tea.Msg {
-		m.com.App.UpdateAgentModel(context.Background())
+		if err := m.com.App.UpdateAgentModel(context.Background()); err != nil {
+			return util.ReportError(err)()
+		}
 		return mcpStateChangedMsg{
 			states: mcp.GetStates(),
 		}
@@ -3538,10 +3842,23 @@ func (m *UI) copyChatHighlight() tea.Cmd {
 		text,
 		"Selected text copied to clipboard",
 		func() tea.Msg {
-			m.chat.ClearMouse()
-			return nil
+			return copyChatHighlightDoneMsg{}
 		},
 	)
+}
+
+// updatePlanMode checks if a tool result is from the plan_mode tool and
+// updates the plan mode state accordingly.
+func (m *UI) updatePlanMode(tr message.ToolResult) {
+	if tr.Name != agenttools.PlanModeToolName || tr.Metadata == "" {
+		return
+	}
+	var meta agenttools.PlanModeResponseMetadata
+	if err := json.Unmarshal([]byte(tr.Metadata), &meta); err != nil {
+		return
+	}
+	m.planMode = meta.PlanActive
+	m.renderPills()
 }
 
 func (m *UI) enableDockerMCP() tea.Msg {

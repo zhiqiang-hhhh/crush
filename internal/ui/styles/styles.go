@@ -249,6 +249,10 @@ type Styles struct {
 			AssistantInfoProvider  lipgloss.Style
 			AssistantInfoDuration  lipgloss.Style
 		}
+
+		// Scrollbar styles for the chat list.
+		ScrollbarThumb lipgloss.Style
+		ScrollbarTrack lipgloss.Style
 	}
 
 	// Tool - styles for tool call rendering
@@ -555,7 +559,7 @@ func DefaultStyles() Styles {
 
 	s := Styles{}
 
-	s.Background = bgBase
+	s.Background = lipgloss.Color("#000000")
 
 	// Populate color fields
 	s.Primary = primary
@@ -625,8 +629,8 @@ func DefaultStyles() Styles {
 			Prompt:           base.Foreground(fgMuted),
 		},
 		Cursor: textarea.CursorStyle{
-			Color: secondary,
-			Shape: tea.CursorBlock,
+			Color: lipgloss.Color("#00ff00"),
+			Shape: tea.CursorBar,
 			Blink: true,
 		},
 	}
@@ -1191,11 +1195,11 @@ func DefaultStyles() Styles {
 	s.Tool.DockerMCPActionDel = base.Foreground(red)
 
 	// Buttons
-	s.ButtonFocus = lipgloss.NewStyle().Foreground(white).Background(secondary)
+	s.ButtonFocus = lipgloss.NewStyle().Foreground(bgBase).Background(charmtone.Yam).Bold(true)
 	s.ButtonBlur = s.Base.Background(bgSubtle)
 
 	// Borders
-	s.BorderFocus = lipgloss.NewStyle().BorderForeground(borderFocus).Border(lipgloss.RoundedBorder()).Padding(1, 2)
+	s.BorderFocus = lipgloss.NewStyle().BorderForeground(fgSubtle).Border(lipgloss.RoundedBorder()).Padding(1, 2)
 
 	// Editor
 	s.EditorPromptNormalFocused = lipgloss.NewStyle().Foreground(greenDark).SetString("::: ")
@@ -1284,16 +1288,21 @@ func DefaultStyles() Styles {
 	s.Chat.Message.ThinkingFooterTitle = s.Muted
 	s.Chat.Message.ThinkingFooterDuration = s.Subtle
 
+	s.Chat.ScrollbarThumb = base.Foreground(fgSubtle)
+	s.Chat.ScrollbarTrack = base.Foreground(border)
+
 	// Text selection.
 	s.TextSelection = lipgloss.NewStyle().Foreground(charmtone.Salt).Background(charmtone.Charple)
 
 	// Dialog styles
-	s.Dialog.Title = base.Padding(0, 1).Foreground(primary)
-	s.Dialog.TitleText = base.Foreground(primary)
+	dialogAccent := charmtone.Yam
+	dialogBorder := fgSubtle
+	s.Dialog.Title = base.Padding(0, 1).Foreground(dialogAccent)
+	s.Dialog.TitleText = base.Foreground(dialogAccent)
 	s.Dialog.TitleError = base.Foreground(red)
 	s.Dialog.TitleAccent = base.Foreground(green).Bold(true)
-	s.Dialog.View = base.Border(lipgloss.RoundedBorder()).BorderForeground(borderFocus)
-	s.Dialog.PrimaryText = base.Padding(0, 1).Foreground(primary)
+	s.Dialog.View = base.Border(lipgloss.RoundedBorder()).BorderForeground(dialogBorder)
+	s.Dialog.PrimaryText = base.Padding(0, 1).Foreground(dialogAccent)
 	s.Dialog.SecondaryText = base.Padding(0, 1).Foreground(fgSubtle)
 	s.Dialog.HelpView = base.Padding(0, 1).AlignHorizontal(lipgloss.Left)
 	s.Dialog.Help.ShortKey = base.Foreground(fgMuted)
@@ -1304,13 +1313,13 @@ func DefaultStyles() Styles {
 	s.Dialog.Help.FullDesc = base.Foreground(fgSubtle)
 	s.Dialog.Help.FullSeparator = base.Foreground(border)
 	s.Dialog.NormalItem = base.Padding(0, 1).Foreground(fgBase)
-	s.Dialog.SelectedItem = base.Padding(0, 1).Background(primary).Foreground(fgBase)
+	s.Dialog.SelectedItem = base.Padding(0, 1).Background(dialogAccent).Foreground(bgBase).Bold(true)
 	s.Dialog.InputPrompt = base.Margin(1, 1)
 
 	s.Dialog.List = base.Margin(0, 0, 1, 0)
 	s.Dialog.ContentPanel = base.Background(bgSubtle).Foreground(fgBase).Padding(1, 2)
-	s.Dialog.Spinner = base.Foreground(secondary)
-	s.Dialog.ScrollbarThumb = base.Foreground(secondary)
+	s.Dialog.Spinner = base.Foreground(dialogAccent)
+	s.Dialog.ScrollbarThumb = base.Foreground(dialogAccent)
 	s.Dialog.ScrollbarTrack = base.Foreground(border)
 
 	s.Dialog.ImagePreview = lipgloss.NewStyle().Padding(0, 1).Foreground(fgSubtle)
@@ -1320,13 +1329,13 @@ func DefaultStyles() Styles {
 	s.Dialog.Arguments.InputLabelBlurred = base.Foreground(fgMuted)
 	s.Dialog.Arguments.InputLabelFocused = base.Bold(true)
 	s.Dialog.Arguments.InputRequiredMarkBlurred = base.Foreground(fgMuted).SetString("*")
-	s.Dialog.Arguments.InputRequiredMarkFocused = base.Foreground(primary).Bold(true).SetString("*")
+	s.Dialog.Arguments.InputRequiredMarkFocused = base.Foreground(dialogAccent).Bold(true).SetString("*")
 
 	s.Dialog.Sessions.DeletingTitle = s.Dialog.Title.Foreground(red)
 	s.Dialog.Sessions.DeletingView = s.Dialog.View.BorderForeground(red)
 	s.Dialog.Sessions.DeletingMessage = s.Base.Padding(1)
 	s.Dialog.Sessions.DeletingTitleGradientFromColor = red
-	s.Dialog.Sessions.DeletingTitleGradientToColor = s.Primary
+	s.Dialog.Sessions.DeletingTitleGradientToColor = charmtone.Yam
 	s.Dialog.Sessions.DeletingItemBlurred = s.Dialog.NormalItem.Foreground(fgSubtle)
 	s.Dialog.Sessions.DeletingItemFocused = s.Dialog.SelectedItem.Background(red).Foreground(charmtone.Butter)
 

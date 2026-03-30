@@ -2,6 +2,7 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -139,7 +140,18 @@ func (r *AgentToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 	// Build tree with nested tool calls.
 	childTools := tree.Root(header)
 
-	for _, nestedTool := range r.agent.nestedTools {
+	nestedTools := r.agent.nestedTools
+	collapsed := !opts.ExpandedContent && len(nestedTools) > maxCollapsedNestedTools
+
+	if collapsed {
+		hidden := len(nestedTools) - maxCollapsedNestedTools
+		childTools.Child(sty.Tool.ContentTruncation.Render(
+			fmt.Sprintf("… %d more tool calls [click or space to expand]", hidden),
+		))
+		nestedTools = nestedTools[len(nestedTools)-maxCollapsedNestedTools:]
+	}
+
+	for _, nestedTool := range nestedTools {
 		childView := nestedTool.Render(remainingWidth)
 		childTools.Child(childView)
 	}
@@ -276,7 +288,18 @@ func (r *AgenticFetchToolRenderContext) RenderTool(sty *styles.Styles, width int
 	// Build tree with nested tool calls.
 	childTools := tree.Root(header)
 
-	for _, nestedTool := range r.fetch.nestedTools {
+	nestedTools := r.fetch.nestedTools
+	collapsed := !opts.ExpandedContent && len(nestedTools) > maxCollapsedNestedTools
+
+	if collapsed {
+		hidden := len(nestedTools) - maxCollapsedNestedTools
+		childTools.Child(sty.Tool.ContentTruncation.Render(
+			fmt.Sprintf("… %d more tool calls [click or space to expand]", hidden),
+		))
+		nestedTools = nestedTools[len(nestedTools)-maxCollapsedNestedTools:]
+	}
+
+	for _, nestedTool := range nestedTools {
 		childView := nestedTool.Render(remainingWidth)
 		childTools.Child(childView)
 	}

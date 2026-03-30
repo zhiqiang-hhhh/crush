@@ -79,6 +79,138 @@ func TestUpdateLayoutAndSize_EditorGrowthShrinksChat(t *testing.T) {
 	}
 }
 
+func TestScrollBy_ReEngagesFollowAtBottom(t *testing.T) {
+	t.Parallel()
+
+	u := newTestUI()
+	u.updateLayoutAndSize()
+
+	msgs := make([]chat.MessageItem, 0, 60)
+	for i := range 60 {
+		msgs = append(msgs, testMessageItem{
+			id:   "m-" + strconv.Itoa(i),
+			text: "message " + strconv.Itoa(i),
+		})
+	}
+	u.chat.SetMessages(msgs...)
+
+	// After SetMessages, follow should be true and at bottom.
+	if !u.chat.Follow() {
+		t.Fatal("expected follow mode after SetMessages")
+	}
+	if !u.chat.AtBottom() {
+		t.Fatal("expected at bottom after SetMessages")
+	}
+
+	// Scroll up — follow should disengage.
+	u.chat.ScrollBy(-10)
+	if u.chat.Follow() {
+		t.Fatal("expected follow mode to be disabled after scrolling up")
+	}
+	if u.chat.AtBottom() {
+		t.Fatal("expected not to be at bottom after scrolling up")
+	}
+
+	// Scroll back down to the bottom — follow should re-engage.
+	u.chat.ScrollBy(999)
+	if !u.chat.AtBottom() {
+		t.Fatal("expected at bottom after scrolling down past end")
+	}
+	if !u.chat.Follow() {
+		t.Fatal("expected follow mode to re-engage when scrolled to bottom")
+	}
+}
+
+func TestScrollBy_ReEngagesFollowAfterContentGrows(t *testing.T) {
+	t.Parallel()
+
+	u := newTestUI()
+	u.updateLayoutAndSize()
+
+	msgs := make([]chat.MessageItem, 0, 60)
+	for i := range 60 {
+		msgs = append(msgs, testMessageItem{
+			id:   "m-" + strconv.Itoa(i),
+			text: "message " + strconv.Itoa(i),
+		})
+	}
+	u.chat.SetMessages(msgs...)
+
+	// Scroll up — follow should disengage.
+	u.chat.ScrollBy(-20)
+	if u.chat.Follow() {
+		t.Fatal("expected follow mode to be disabled after scrolling up")
+	}
+
+	// Simulate streaming: append new messages while user is scrolled up.
+	for i := 60; i < 80; i++ {
+		u.chat.AppendMessages(testMessageItem{
+			id:   "m-" + strconv.Itoa(i),
+			text: "new message " + strconv.Itoa(i),
+		})
+	}
+
+	// Still should not be following (user is scrolled up).
+	if u.chat.Follow() {
+		t.Fatal("expected follow mode to remain disabled while scrolled up")
+	}
+
+	// Scroll down to the very bottom.
+	u.chat.ScrollBy(9999)
+	if !u.chat.AtBottom() {
+		t.Fatal("expected at bottom after large scroll down")
+	}
+	if !u.chat.Follow() {
+		t.Fatal("expected follow mode to re-engage after scrolling to bottom")
+	}
+}
+
+func TestScrollBy_ReEngagesFollowNearBottom(t *testing.T) {
+	t.Parallel()
+
+	u := newTestUI()
+	u.updateLayoutAndSize()
+
+	// Use multi-line messages so the list is significantly scrollable.
+	msgs := make([]chat.MessageItem, 0, 40)
+	for i := range 40 {
+		msgs = append(msgs, testMessageItem{
+			id:   "m-" + strconv.Itoa(i),
+			text: "message line 1\nmessage line 2\nmessage line 3",
+		})
+	}
+	u.chat.SetMessages(msgs...)
+
+	// Scroll up far — follow should disengage.
+	u.chat.ScrollBy(-200)
+	if u.chat.Follow() {
+		t.Fatal("expected follow mode to be disabled after scrolling up")
+	}
+
+	// Scroll down to near the bottom but not exactly at it.
+	// First scroll most of the way with a large value, then back off slightly.
+	u.chat.ScrollBy(9999)
+	if !u.chat.Follow() {
+		t.Fatal("expected follow mode at bottom")
+	}
+
+	// Now scroll up just a few lines (within the near-bottom threshold).
+	u.chat.ScrollBy(-3)
+	// After scrolling up, follow is disabled.
+	if u.chat.Follow() {
+		t.Fatal("expected follow mode disabled after small scroll up")
+	}
+
+	// Scroll down by 1 line — we should be near bottom and follow re-engages.
+	u.chat.ScrollBy(1)
+	if !u.chat.NearBottom() {
+		t.Fatal("expected to be near bottom after scrolling down by 1")
+	}
+	if !u.chat.Follow() {
+		t.Fatal("expected follow mode to re-engage when near bottom")
+	}
+}
+
 func TestHandleTextareaHeightChange_FollowModeStaysAtBottom(t *testing.T) {
 	t.Parallel()
 

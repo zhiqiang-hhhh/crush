@@ -7,7 +7,6 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/config"
@@ -75,15 +74,15 @@ func (m *UI) skipInitializeProject() tea.Cmd {
 	return m.markProjectInitialized
 }
 
-// initializeView renders the project initialization prompt with Yes/No buttons.
-func (m *UI) initializeView() string {
+// initializeView renders the project initialization prompt content.
+func (m *UI) initializeView(width int) string {
 	s := m.com.Styles.Initialize
 	cwd := home.Short(m.com.Store().WorkingDir())
 	initFile := m.com.Config().Options.InitializeAs
 
 	header := s.Header.Render("Would you like to initialize this project?")
 	path := s.Accent.PaddingLeft(2).Render(cwd)
-	desc := s.Content.Render(fmt.Sprintf("When I initialize your codebase I examine the project and put the result into an %s file which serves as general context.", initFile))
+	desc := s.Content.Width(width).Render(fmt.Sprintf("When I initialize your codebase I examine the project and put the result into an %s file which serves as general context.", initFile))
 	hint := s.Content.Render("You can also initialize anytime via ") + s.Accent.Render("ctrl+p") + s.Content.Render(".")
 	prompt := s.Content.Render("Would you like to initialize now?")
 
@@ -92,23 +91,15 @@ func (m *UI) initializeView() string {
 		{Text: "Nope", Selected: !m.onboarding.yesInitializeSelected},
 	}, " ")
 
-	// max width 60 so the text is compact
-	width := min(m.layout.main.Dx(), 60)
-
-	return lipgloss.NewStyle().
-		Width(width).
-		Height(m.layout.main.Dy()).
-		PaddingBottom(1).
-		AlignVertical(lipgloss.Bottom).
-		Render(strings.Join(
-			[]string{
-				header,
-				path,
-				desc,
-				hint,
-				prompt,
-				buttons,
-			},
-			"\n\n",
-		))
+	return strings.Join(
+		[]string{
+			header,
+			path,
+			desc,
+			hint,
+			prompt,
+			buttons,
+		},
+		"\n\n",
+	)
 }

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/attachments"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // UserMessageItem represents a user message in the chat UI.
@@ -17,9 +19,10 @@ type UserMessageItem struct {
 	*cachedMessageItem
 	*focusableMessageItem
 
-	attachments *attachments.Renderer
-	message     *message.Message
-	sty         *styles.Styles
+	attachments    *attachments.Renderer
+	message        *message.Message
+	sty            *styles.Styles
+	pendingPreview *message.Attachment
 }
 
 // NewUserMessageItem creates a new UserMessageItem.
@@ -107,4 +110,50 @@ func (m *UserMessageItem) HandleKeyEvent(key tea.KeyMsg) (bool, tea.Cmd) {
 		return true, common.CopyToClipboard(text, "Message copied to clipboard")
 	}
 	return false, nil
+}
+
+// HandleMouseClick implements [list.MouseClickable].
+func (m *UserMessageItem) HandleMouseClick(btn ansi.MouseButton, x, y int) bool {
+	if btn != ansi.MouseLeft {
+		return false
+	}
+	m.pendingPreview = nil
+
+	binaries := m.message.BinaryContent()
+	if len(binaries) == 0 {
+		return false
+	}
+
+	// Use cached render height to determine where attachments start.
+	// The attachment line is always at the bottom of the rendered item.
+	_, cachedHeight, hasCached := m.getCachedRender(m.width)
+	if hasCached {
+		attachmentHeight := lipgloss.Height(m.renderAttachments(m.width))
+		textHeight := cachedHeight - attachmentHeight
+		if y < textHeight {
+			return false
+		}
+	}
+
+	for _, bc := range binaries {
+		if !strings.HasPrefix(bc.MIMEType, "image/") {
+			continue
+		}
+		att := message.Attachment{
+			FilePath: bc.Path,
+			FileName: filepath.Base(bc.Path),
+			MimeType: bc.MIMEType,
+			Content:  bc.Data,
+		}
+		m.pendingPreview = &att
+		return true
+	}
+	return false
+}
+
+// PendingImagePreview implements [ImagePreviewable].
+func (m *UserMessageItem) PendingImagePreview() *message.Attachment {
+	att := m.pendingPreview
+	m.pendingPreview = nil
+	return att
 }

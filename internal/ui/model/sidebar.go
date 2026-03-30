@@ -132,7 +132,7 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 		blocks...,
 	)
 
-	_, remainingHeightArea := layout.SplitVertical(m.layout.sidebar, layout.Fixed(lipgloss.Height(sidebarHeader)))
+	remainingHeightArea := layout.Vertical(layout.Len(lipgloss.Height(sidebarHeader)), layout.Fill(1)).Split(m.layout.sidebar)[1]
 	remainingHeight := remainingHeightArea.Dy() - 10
 	maxFiles, maxLSPs, maxMCPs := getDynamicHeightLimits(remainingHeight)
 
@@ -142,8 +142,8 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 
 	uv.NewStyledString(
 		lipgloss.NewStyle().
-			MaxWidth(width).
-			MaxHeight(height).
+			Width(width).
+			Height(height).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Left,
@@ -156,4 +156,16 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 				),
 			),
 	).Draw(scr, area)
+
+	// Apply sidebar background to all cells. We do this after Draw because
+	// lipgloss inner style resets (\e[0m) clear the background set by outer
+	// styles. Walking the cells ensures full, reliable coverage.
+	bg := t.Background
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		for x := area.Min.X; x < area.Max.X; x++ {
+			if c := scr.CellAt(x, y); c != nil {
+				c.Style.Bg = bg
+			}
+		}
+	}
 }
