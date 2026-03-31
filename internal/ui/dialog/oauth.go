@@ -54,9 +54,10 @@ type OAuth struct {
 	spinner spinner.Model
 	help    help.Model
 	keyMap  struct {
-		Copy   key.Binding
-		Submit key.Binding
-		Close  key.Binding
+		Copy    key.Binding
+		CopyURL key.Binding
+		Submit  key.Binding
+		Close   key.Binding
 	}
 
 	width           int
@@ -104,6 +105,10 @@ func newOAuth(
 		key.WithKeys("c"),
 		key.WithHelp("c", "copy code"),
 	)
+	m.keyMap.CopyURL = key.NewBinding(
+		key.WithKeys("u"),
+		key.WithHelp("u", "copy url"),
+	)
 	m.keyMap.Submit = key.NewBinding(
 		key.WithKeys("enter", "ctrl+y"),
 		key.WithHelp("enter", "copy & open"),
@@ -135,6 +140,10 @@ func (m *OAuth) HandleMsg(msg tea.Msg) Action {
 		switch {
 		case key.Matches(msg, m.keyMap.Copy):
 			cmd := m.copyCode()
+			return ActionCmd{cmd}
+
+		case key.Matches(msg, m.keyMap.CopyURL):
+			cmd := m.copyURL()
 			return ActionCmd{cmd}
 
 		case key.Matches(msg, m.keyMap.Submit):
@@ -340,6 +349,7 @@ func (m *OAuth) ShortHelp() []key.Binding {
 	default:
 		return []key.Binding{
 			m.keyMap.Copy,
+			m.keyMap.CopyURL,
 			m.keyMap.Submit,
 			m.keyMap.Close,
 		}
@@ -356,6 +366,16 @@ func (d *OAuth) copyCode() tea.Cmd {
 	)
 }
 
+func (d *OAuth) copyURL() tea.Cmd {
+	if d.State != OAuthStateDisplay || d.verificationURL == "" {
+		return nil
+	}
+	return tea.Sequence(
+		tea.SetClipboard(d.verificationURL),
+		util.ReportInfo("URL copied to clipboard"),
+	)
+}
+
 func (d *OAuth) copyCodeAndOpenURL() tea.Cmd {
 	if d.State != OAuthStateDisplay {
 		return nil
@@ -364,7 +384,7 @@ func (d *OAuth) copyCodeAndOpenURL() tea.Cmd {
 		tea.SetClipboard(d.userCode),
 		func() tea.Msg {
 			if err := browser.OpenURL(d.verificationURL); err != nil {
-				return ActionOAuthErrored{fmt.Errorf("failed to open browser: %w", err)}
+				return util.NewWarnMsg("Could not open browser. Press u to copy URL.")
 			}
 			return nil
 		},

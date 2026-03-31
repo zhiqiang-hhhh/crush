@@ -29,6 +29,19 @@ import (
 
 const defaultCatwalkURL = "https://catwalk.charm.sh"
 
+var copilotFallbackProvider = catwalk.Provider{
+	Name:                "GitHub Copilot",
+	ID:                  catwalk.InferenceProviderCopilot,
+	APIEndpoint:         "https://api.githubcopilot.com",
+	Type:                catwalk.TypeOpenAICompat,
+	DefaultLargeModelID: "claude-opus-4.6",
+	DefaultSmallModelID: "claude-haiku-4.5",
+	Models: []catwalk.Model{
+		{ID: "claude-opus-4.6", Name: "Claude Opus 4.6", DefaultMaxTokens: 64000, CanReason: true, DefaultReasoningEffort: "medium"},
+		{ID: "claude-haiku-4.5", Name: "Claude Haiku 4.5", DefaultMaxTokens: 64000, CanReason: true, DefaultReasoningEffort: "medium"},
+	},
+}
+
 // Load loads the configuration from the default paths and returns a
 // ConfigStore that owns both the pure-data Config and all runtime state.
 func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
@@ -90,6 +103,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	providers = ensureCopilotProvider(providers)
 	store.knownProviders = providers
 
 	env := env.New()
@@ -101,6 +115,15 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	}
 
 	if !cfg.IsConfigured() {
+		if _, imported := store.ImportCopilot(); imported {
+			slog.Info("Imported GitHub Copilot credentials from disk")
+			if err := configureSelectedModels(store, store.knownProviders); err != nil {
+				return nil, fmt.Errorf("failed to configure selected models after Copilot import: %w", err)
+			}
+			store.SetupAgents()
+			return store, nil
+		}
+
 		slog.Warn("No providers configured")
 		return store, nil
 	}
@@ -246,6 +269,9 @@ func (c *Config) configureProviders(store *ConfigStore, env env.Env, resolver Va
 
 		switch p.ID {
 		// Handle specific providers that require additional configuration
+		case catwalk.InferenceProviderCopilot:
+			// GitHub Copilot uses OAuth and can be configured interactively without
+			// a pre-existing API key in the environment.
 		case catwalk.InferenceProviderVertexAI:
 			var (
 				project  = env.Get("VERTEXAI_PROJECT")
@@ -365,6 +391,16 @@ func (c *Config) configureProviders(store *ConfigStore, env env.Env, resolver Va
 	}
 
 	return nil
+}
+
+func ensureCopilotProvider(providers []catwalk.Provider) []catwalk.Provider {
+	if slices.ContainsFunc(providers, func(p catwalk.Provider) bool {
+		return p.ID == catwalk.InferenceProviderCopilot
+	}) {
+		return providers
+	}
+
+	return append(providers, copilotFallbackProvider)
 }
 
 func (c *Config) setDefaults(workingDir, dataDir string) {

@@ -14,9 +14,10 @@ import (
 // ModelsList is a list specifically for model items and groups.
 type ModelsList struct {
 	*list.List
-	groups []ModelGroup
-	query  string
-	t      *styles.Styles
+	groups      []ModelGroup
+	connectItem *ConnectProviderItem
+	query       string
+	t           *styles.Styles
 }
 
 // NewModelsList creates a new list suitable for model items and groups.
@@ -30,13 +31,21 @@ func NewModelsList(sty *styles.Styles, groups ...ModelGroup) *ModelsList {
 	return f
 }
 
-// Len returns the number of model items across all groups.
+// Len returns the number of selectable items across all groups.
 func (f *ModelsList) Len() int {
 	n := 0
 	for _, g := range f.groups {
 		n += len(g.Items)
 	}
+	if f.connectItem != nil {
+		n++
+	}
 	return n
+}
+
+// SetConnectItem sets the connect provider item to display at the bottom.
+func (f *ModelsList) SetConnectItem(item *ConnectProviderItem) {
+	f.connectItem = item
 }
 
 // SetGroups sets the model groups and updates the list items.
@@ -48,7 +57,11 @@ func (f *ModelsList) SetGroups(groups ...ModelGroup) {
 		for _, item := range g.Items {
 			items = append(items, item)
 		}
-		// Add a space separator after each provider section
+		// Add a space separator after each provider section.
+		items = append(items, list.NewSpacerItem(1))
+	}
+	if f.connectItem != nil {
+		items = append(items, f.connectItem)
 		items = append(items, list.NewSpacerItem(1))
 	}
 	f.SetItems(items...)
@@ -60,8 +73,19 @@ func (f *ModelsList) SetFilter(q string) {
 	f.SetItems(f.VisibleItems()...)
 }
 
+// isSelectableItem returns true if the item is a selectable item in the
+// models list (model items and the connect provider item).
+func isSelectableItem(item list.Item) bool {
+	switch item.(type) {
+	case *ModelItem, *ConnectProviderItem:
+		return true
+	default:
+		return false
+	}
+}
+
 // SetSelected sets the selected item index. It overrides the base method to
-// skip non-model items.
+// skip non-selectable items.
 func (f *ModelsList) SetSelected(index int) {
 	if index < 0 || index >= f.Len() {
 		f.List.SetSelected(index)
@@ -71,7 +95,7 @@ func (f *ModelsList) SetSelected(index int) {
 	f.List.SetSelected(index)
 	for {
 		selectedItem := f.SelectedItem()
-		if _, ok := selectedItem.(*ModelItem); ok {
+		if isSelectableItem(selectedItem) {
 			return
 		}
 		f.List.SetSelected(index + 1)
@@ -101,13 +125,13 @@ func (f *ModelsList) SetSelectedItem(itemID string) {
 	}
 }
 
-// SelectNext selects the next model item, skipping any non-focusable items
-// like group headers and spacers.
+// SelectNext selects the next selectable item, skipping any non-focusable
+// items like group headers and spacers.
 func (f *ModelsList) SelectNext() (v bool) {
 	v = f.List.SelectNext()
 	for v {
 		selectedItem := f.SelectedItem()
-		if _, ok := selectedItem.(*ModelItem); ok {
+		if isSelectableItem(selectedItem) {
 			return v
 		}
 		v = f.List.SelectNext()
@@ -115,13 +139,13 @@ func (f *ModelsList) SelectNext() (v bool) {
 	return v
 }
 
-// SelectPrev selects the previous model item, skipping any non-focusable items
-// like group headers and spacers.
+// SelectPrev selects the previous selectable item, skipping any non-focusable
+// items like group headers and spacers.
 func (f *ModelsList) SelectPrev() (v bool) {
 	v = f.List.SelectPrev()
 	for v {
 		selectedItem := f.SelectedItem()
-		if _, ok := selectedItem.(*ModelItem); ok {
+		if isSelectableItem(selectedItem) {
 			return v
 		}
 		v = f.List.SelectPrev()
@@ -129,13 +153,12 @@ func (f *ModelsList) SelectPrev() (v bool) {
 	return v
 }
 
-// SelectFirst selects the first model item in the list.
+// SelectFirst selects the first selectable item in the list.
 func (f *ModelsList) SelectFirst() (v bool) {
 	v = f.List.SelectFirst()
 	for v {
 		selectedItem := f.SelectedItem()
-		_, ok := selectedItem.(*ModelItem)
-		if ok {
+		if isSelectableItem(selectedItem) {
 			return v
 		}
 		v = f.List.SelectNext()
@@ -143,12 +166,12 @@ func (f *ModelsList) SelectFirst() (v bool) {
 	return v
 }
 
-// SelectLast selects the last model item in the list.
+// SelectLast selects the last selectable item in the list.
 func (f *ModelsList) SelectLast() (v bool) {
 	v = f.List.SelectLast()
 	for v {
 		selectedItem := f.SelectedItem()
-		if _, ok := selectedItem.(*ModelItem); ok {
+		if isSelectableItem(selectedItem) {
 			return v
 		}
 		v = f.List.SelectPrev()
@@ -187,7 +210,11 @@ func (f *ModelsList) VisibleItems() []list.Item {
 				item.SetMatch(fuzzy.Match{})
 				items = append(items, item)
 			}
-			// Add a space separator after each provider section
+			// Add a space separator after each provider section.
+			items = append(items, list.NewSpacerItem(1))
+		}
+		if f.connectItem != nil {
+			items = append(items, f.connectItem)
 			items = append(items, list.NewSpacerItem(1))
 		}
 		return items
@@ -247,9 +274,15 @@ func (f *ModelsList) VisibleItems() []list.Item {
 			}
 		}
 		if addedCount > 0 {
-			// Add a space separator after each provider section
+			// Add a space separator after each provider section.
 			items = append(items, list.NewSpacerItem(1))
 		}
+	}
+
+	// Always show the connect provider item when filtering.
+	if f.connectItem != nil {
+		items = append(items, f.connectItem)
+		items = append(items, list.NewSpacerItem(1))
 	}
 
 	return items

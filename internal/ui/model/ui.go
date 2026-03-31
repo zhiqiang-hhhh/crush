@@ -1258,7 +1258,16 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			defer fimage.ResetCache()
 		}
 
+		// When closing the providers dialog, go back to the models dialog.
+		closingProviders := m.dialog.DialogLast() != nil && m.dialog.DialogLast().ID() == dialog.ProvidersID
+
 		m.dialog.CloseFrontDialog()
+
+		if closingProviders {
+			if cmd := m.openModelsDialog(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 
 		if isOnboarding {
 			if cmd := m.openModelsDialog(); cmd != nil {
@@ -1472,6 +1481,39 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 				cmds = append(cmds, util.ReportError(err))
 			}
 		}
+
+	case dialog.ActionConnectProvider:
+		// User selected "Connect Provider" from the models dialog or commands.
+		// Open the providers dialog to select a provider to connect.
+		m.dialog.CloseDialog(dialog.ModelsID)
+		m.dialog.CloseDialog(dialog.CommandsID)
+		if cmd := m.openProvidersDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case dialog.ActionSelectProvider:
+		// User selected a provider in the providers dialog.
+		// Close the providers dialog and open the auth dialog for the selected provider.
+		m.dialog.CloseDialog(dialog.ProvidersID)
+		provider := msg.Provider
+		// Use the first model from the provider as the default selection.
+		var selectedModel config.SelectedModel
+		if len(provider.Models) > 0 {
+			selectedModel = config.SelectedModel{
+				Model:           provider.Models[0].ID,
+				Provider:        string(provider.ID),
+				ReasoningEffort: provider.Models[0].DefaultReasoningEffort,
+				MaxTokens:       provider.Models[0].DefaultMaxTokens,
+			}
+		} else {
+			selectedModel = config.SelectedModel{
+				Provider: string(provider.ID),
+			}
+		}
+		if cmd := m.openAuthenticationDialog(provider, selectedModel, config.SelectedModelTypeLarge); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case dialog.ActionSelectReasoningEffort:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait..."))
@@ -3057,6 +3099,22 @@ func (m *UI) openModelsDialog() tea.Cmd {
 
 	m.dialog.OpenDialog(modelsDialog)
 
+	return nil
+}
+
+// openProvidersDialog opens the provider selection dialog.
+func (m *UI) openProvidersDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.ProvidersID) {
+		m.dialog.BringToFront(dialog.ProvidersID)
+		return nil
+	}
+
+	providersDialog, err := dialog.NewProviders(m.com)
+	if err != nil {
+		return util.ReportError(err)
+	}
+
+	m.dialog.OpenDialog(providersDialog)
 	return nil
 }
 

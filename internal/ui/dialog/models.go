@@ -142,11 +142,7 @@ func NewModels(com *common.Common, isOnboarding bool) (*Models, error) {
 	)
 	m.keyMap.Close = CloseKey
 
-	var err error
-	m.providers, err = config.Providers(m.com.Config())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get providers: %w", err)
-	}
+	m.providers = com.Store().KnownProviders()
 
 	if err := m.setProviderItems(); err != nil {
 		return nil, fmt.Errorf("failed to set provider items: %w", err)
@@ -187,6 +183,11 @@ func (m *Models) HandleMsg(msg tea.Msg) Action {
 			selectedItem := m.list.SelectedItem()
 			if selectedItem == nil {
 				break
+			}
+
+			// Handle "Connect a provider" item.
+			if _, ok := selectedItem.(*ConnectProviderItem); ok {
+				return ActionConnectProvider{}
 			}
 
 			modelItem, ok := selectedItem.(*ModelItem)
@@ -358,11 +359,8 @@ func (m *Models) setProviderItems() error {
 	// Track providers already added to avoid duplicates
 	addedProviders := make(map[string]bool)
 
-	// Get a list of known providers to compare against
-	knownProviders, err := config.Providers(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to get providers: %w", err)
-	}
+	// Get a list of known providers to compare against.
+	knownProviders := m.com.Store().KnownProviders()
 
 	containsProviderFunc := func(id string) func(p catwalk.Provider) bool {
 		return func(p catwalk.Provider) bool {
@@ -416,7 +414,8 @@ func (m *Models) setProviderItems() error {
 		}
 	})
 
-	// Now add known providers from the predefined list
+	// Now add known providers from the predefined list.
+	// When not onboarding, only show providers that are configured.
 	for _, provider := range m.providers {
 		providerID := string(provider.ID)
 		if addedProviders[providerID] {
@@ -425,6 +424,11 @@ func (m *Models) setProviderItems() error {
 
 		providerConfig, providerConfigured := cfg.Providers.Get(providerID)
 		if providerConfigured && providerConfig.Disable {
+			continue
+		}
+
+		// Skip unconfigured providers unless onboarding.
+		if !m.isOnboarding && !providerConfigured {
 			continue
 		}
 
@@ -501,6 +505,9 @@ func (m *Models) setProviderItems() error {
 	}
 
 	// Set model groups in the list.
+	if !m.isOnboarding {
+		m.list.SetConnectItem(NewConnectProviderItem(t))
+	}
 	m.list.SetGroups(groups...)
 	m.list.SetSelectedItem(selectedItemID)
 	m.list.ScrollToTop()

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -85,6 +86,39 @@ func TestConfig_configureProviders(t *testing.T) {
 	// We want to make sure that we keep the configured API key as a placeholder
 	pc, _ := cfg.Providers.Get("openai")
 	require.Equal(t, "$OPENAI_API_KEY", pc.APIKey)
+}
+
+func TestConfig_ensureCopilotProvider(t *testing.T) {
+	t.Run("adds copilot when missing", func(t *testing.T) {
+		providers := []catwalk.Provider{{ID: "openai"}}
+		withCopilot := ensureCopilotProvider(providers)
+		require.Len(t, withCopilot, 2)
+		require.True(t, slices.ContainsFunc(withCopilot, func(p catwalk.Provider) bool {
+			return p.ID == catwalk.InferenceProviderCopilot
+		}))
+	})
+
+	t.Run("does not duplicate copilot", func(t *testing.T) {
+		providers := []catwalk.Provider{{ID: catwalk.InferenceProviderCopilot}}
+		withCopilot := ensureCopilotProvider(providers)
+		require.Len(t, withCopilot, 1)
+	})
+}
+
+func TestConfig_configureProvidersAllowsCopilotWithoutAPIKey(t *testing.T) {
+	cfg := &Config{}
+	cfg.setDefaults("/tmp", "")
+
+	env := env.NewFromMap(map[string]string{})
+	resolver := NewEnvironmentVariableResolver(env)
+	err := cfg.configureProviders(testStore(cfg), env, resolver, []catwalk.Provider{copilotFallbackProvider})
+	require.NoError(t, err)
+
+	provider, ok := cfg.Providers.Get(string(catwalk.InferenceProviderCopilot))
+	require.True(t, ok)
+	require.Equal(t, string(catwalk.InferenceProviderCopilot), provider.ID)
+	require.Equal(t, "https://api.githubcopilot.com", provider.BaseURL)
+	require.NotEmpty(t, provider.Models)
 }
 
 func TestConfig_configureProvidersWithOverride(t *testing.T) {

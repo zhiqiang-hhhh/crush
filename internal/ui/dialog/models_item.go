@@ -128,3 +128,55 @@ func (m *ModelItem) SetMatch(fm fuzzy.Match) {
 	m.cache = nil
 	m.m = fm
 }
+
+// ConnectProviderItem is a special list item that triggers the provider
+// connection flow when selected.
+type ConnectProviderItem struct {
+	t       *styles.Styles
+	cache   map[int]string
+	focused bool
+}
+
+var _ ListItem = &ConnectProviderItem{}
+
+// NewConnectProviderItem creates a new ConnectProviderItem.
+func NewConnectProviderItem(t *styles.Styles) *ConnectProviderItem {
+	return &ConnectProviderItem{
+		t:     t,
+		cache: make(map[int]string),
+	}
+}
+
+// Filter implements ListItem.
+func (c *ConnectProviderItem) Filter() string {
+	return "Connect a provider"
+}
+
+// ID implements ListItem.
+func (c *ConnectProviderItem) ID() string {
+	return "__connect_provider__"
+}
+
+// Render implements ListItem.
+func (c *ConnectProviderItem) Render(width int) string {
+	styles := ListItemStyles{
+		ItemBlurred:     c.t.Dialog.NormalItem,
+		ItemFocused:     c.t.Dialog.SelectedItem,
+		InfoTextBlurred: c.t.Base,
+		InfoTextFocused: c.t.Base,
+	}
+	return renderItem(styles, "+ Connect a provider", "", c.focused, width, c.cache, nil)
+}
+
+// SetFocused implements ListItem.
+func (c *ConnectProviderItem) SetFocused(focused bool) {
+	if c.focused != focused {
+		c.cache = nil
+	}
+	c.focused = focused
+}
+
+// SetMatch implements ListItem.
+func (c *ConnectProviderItem) SetMatch(_ fuzzy.Match) {
+	// No-op: Connect provider item does not support fuzzy matching.
+}

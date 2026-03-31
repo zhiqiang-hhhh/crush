@@ -85,6 +85,8 @@ type (
 	ActionEnableDockerMCP struct{}
 	// ActionDisableDockerMCP is a message to disable Docker MCP.
 	ActionDisableDockerMCP struct{}
+	// ActionConnectProvider is a message to open the provider connection flow.
+	ActionConnectProvider struct{}
 )
 
 // Messages for API key input dialog.
