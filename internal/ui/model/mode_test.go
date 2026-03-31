@@ -31,6 +31,20 @@ func TestParseModeCommand(t *testing.T) {
 		require.Equal(t, session.SessionModePlan, cmd.mode)
 	})
 
+	t.Run("switch to shell", func(t *testing.T) {
+		cmd, err, ok := parseModeCommand("/mode shell")
+		require.True(t, ok)
+		require.NoError(t, err)
+		require.Equal(t, session.SessionModeShell, cmd.mode)
+	})
+
+	t.Run("shell alias", func(t *testing.T) {
+		cmd, err, ok := parseModeCommand("/shell")
+		require.True(t, ok)
+		require.NoError(t, err)
+		require.Equal(t, session.SessionModeShell, cmd.mode)
+	})
+
 	t.Run("invalid mode value", func(t *testing.T) {
 		_, err, ok := parseModeCommand("/mode nope")
 		require.True(t, ok)
@@ -48,6 +62,7 @@ func TestModeAgentID(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(t, "plan", modeAgentID(session.SessionModePlan))
+	require.Equal(t, "coder", modeAgentID(session.SessionModeShell))
 	require.Equal(t, "coder", modeAgentID(session.SessionModeBuild))
 	require.Equal(t, "coder", modeAgentID("unknown"))
 }

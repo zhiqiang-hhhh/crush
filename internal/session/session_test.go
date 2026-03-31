@@ -28,4 +28,12 @@ func TestServiceSetModePersists(t *testing.T) {
 	reloaded, err := service.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Equal(t, SessionModePlan, reloaded.Mode)
+
+	updated, err = service.SetMode(t.Context(), sess.ID, SessionModeShell)
+	require.NoError(t, err)
+	require.Equal(t, SessionModeShell, updated.Mode)
+
+	reloaded, err = service.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, SessionModeShell, reloaded.Mode)
 }

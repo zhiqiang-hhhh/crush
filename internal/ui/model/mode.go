@@ -17,8 +17,11 @@ type modeCommand struct {
 }
 
 func normalizeSessionMode(mode session.SessionMode) session.SessionMode {
-	if mode == session.SessionModePlan {
+	switch mode {
+	case session.SessionModePlan:
 		return session.SessionModePlan
+	case session.SessionModeShell:
+		return session.SessionModeShell
 	}
 	return session.SessionModeBuild
 }
@@ -47,6 +50,11 @@ func parseModeCommand(input string) (modeCommand, error, bool) {
 			return modeCommand{}, fmt.Errorf("usage: /build"), true
 		}
 		return modeCommand{mode: session.SessionModeBuild}, nil, true
+	case "/shell":
+		if len(parts) != 1 {
+			return modeCommand{}, fmt.Errorf("usage: /shell"), true
+		}
+		return modeCommand{mode: session.SessionModeShell}, nil, true
 	case "/mode":
 		switch len(parts) {
 		case 1:
@@ -57,11 +65,13 @@ func parseModeCommand(input string) (modeCommand, error, bool) {
 				return modeCommand{mode: session.SessionModeBuild}, nil, true
 			case string(session.SessionModePlan):
 				return modeCommand{mode: session.SessionModePlan}, nil, true
+			case string(session.SessionModeShell):
+				return modeCommand{mode: session.SessionModeShell}, nil, true
 			default:
 				return modeCommand{}, fmt.Errorf("unknown mode %q", parts[1]), true
 			}
 		default:
-			return modeCommand{}, fmt.Errorf("usage: /mode [build|plan]"), true
+			return modeCommand{}, fmt.Errorf("usage: /mode [build|plan|shell]"), true
 		}
 	default:
 		return modeCommand{}, nil, false
@@ -108,7 +118,7 @@ func (m *UI) handleModeCommand(input string) tea.Cmd {
 		return util.ReportWarn(err.Error())
 	}
 	if parsed.showCurrent {
-		return util.ReportInfo(fmt.Sprintf("Current mode: %s. Available: build, plan.", m.activeSessionMode()))
+		return util.ReportInfo(fmt.Sprintf("Current mode: %s. Available: build, plan, shell.", m.activeSessionMode()))
 	}
 
 	mode := normalizeSessionMode(parsed.mode)

@@ -26,6 +26,7 @@ const (
 
 	SessionModeBuild SessionMode = "build"
 	SessionModePlan  SessionMode = "plan"
+	SessionModeShell SessionMode = "shell"
 )
 
 // HashID returns the XXH3 hash of a session ID (UUID) as a hex string.

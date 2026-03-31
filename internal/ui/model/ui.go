@@ -38,6 +38,7 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
 	"github.com/charmbracelet/crush/internal/ui/chat"
@@ -197,6 +198,7 @@ type UI struct {
 	readyPlaceholder   string
 	workingPlaceholder string
 	draftMode          session.SessionMode
+	sessionShells      map[string]*shell.Shell
 
 	// Completions state
 	completions              *completions.Completions
@@ -323,6 +325,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		initialSessionID:    initialSessionID,
 		continueLastSession: continueLast,
 		draftMode:           session.SessionModeBuild,
+		sessionShells:       make(map[string]*shell.Shell),
 	}
 
 	status := NewStatus(com, ui)
@@ -875,6 +878,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textarea.Placeholder = m.workingPlaceholder
 		} else if m.activeSessionMode() == session.SessionModePlan {
 			m.textarea.Placeholder = "Plan mode"
+		} else if m.activeSessionMode() == session.SessionModeShell {
+			m.textarea.Placeholder = "Shell mode"
 		} else {
 			m.textarea.Placeholder = m.readyPlaceholder
 		}
@@ -1819,6 +1824,15 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 
 				m.randomizePlaceholders()
 				m.historyReset()
+
+				if m.activeSessionMode() == session.SessionModeShell {
+					var cmds []tea.Cmd
+					if len(attachments) > 0 {
+						cmds = append(cmds, util.ReportWarn("Attachments are ignored in shell mode."))
+					}
+					cmds = append(cmds, m.sendShellCommand(value), m.loadPromptHistory())
+					return tea.Batch(cmds...)
+				}
 
 				return tea.Batch(m.sendMessage(value, attachments...), m.loadPromptHistory())
 			case key.Matches(msg, m.keyMap.Chat.NewSession):

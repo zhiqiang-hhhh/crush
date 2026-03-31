@@ -426,6 +426,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		NewCommandItem(c.com.Styles, "connect_provider", "Connect Provider", "", ActionConnectProvider{}),
 		NewCommandItem(c.com.Styles, "mode_plan", "Plan Mode (/plan)", "", ActionSwitchMode{Mode: session.SessionModePlan}),
 		NewCommandItem(c.com.Styles, "mode_build", "Build Mode (/build)", "", ActionSwitchMode{Mode: session.SessionModeBuild}),
+		NewCommandItem(c.com.Styles, "mode_shell", "Shell Mode (/shell)", "", ActionSwitchMode{Mode: session.SessionModeShell}),
 	}
 
 	// Only show compact command if there's an active session
