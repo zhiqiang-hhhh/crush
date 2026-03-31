@@ -7,6 +7,7 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -275,6 +276,41 @@ func TestRunSubAgent(t *testing.T) {
 		require.NoError(t, err)
 		assert.InDelta(t, 0.05, updated.Cost, 1e-9)
 	})
+}
+
+func TestRunWithAgentSelectsRequestedAgent(t *testing.T) {
+	const providerID = "test-provider"
+	providerCfg := config.ProviderConfig{ID: providerID}
+	env := testEnv(t)
+	coord := newTestCoordinator(t, env, providerID, providerCfg)
+	coord.cfg.Config().Agents = map[string]config.Agent{
+		config.AgentCoder: {ID: config.AgentCoder, AllowedTools: []string{}},
+		config.AgentPlan:  {ID: config.AgentPlan, AllowedTools: []string{}},
+	}
+	basePrompt, err := prompt.NewPrompt("test", "test")
+	require.NoError(t, err)
+
+	called := ""
+	coord.agents = map[string]SessionAgent{
+		config.AgentCoder: newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			called = config.AgentCoder
+			return agentResultWithText(call.Prompt), nil
+		}),
+		config.AgentPlan: newMockAgent(providerID, 4096, func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+			called = config.AgentPlan
+			return agentResultWithText(call.Prompt), nil
+		}),
+	}
+	coord.currentAgent = coord.agents[config.AgentCoder]
+	coord.prompts = map[string]*prompt.Prompt{
+		config.AgentCoder: basePrompt,
+		config.AgentPlan:  basePrompt,
+	}
+
+	result, err := coord.RunWithAgent(t.Context(), config.AgentPlan, "session-1", "inspect this")
+	require.NoError(t, err)
+	require.Equal(t, config.AgentPlan, called)
+	require.Equal(t, "inspect this", result.Response.Content[0].(fantasy.TextContent).Text)
 }
 
 func TestUpdateParentSessionCost(t *testing.T) {

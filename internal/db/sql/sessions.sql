@@ -3,6 +3,7 @@ INSERT INTO sessions (
     id,
     parent_session_id,
     title,
+    mode,
     message_count,
     prompt_tokens,
     completion_tokens,
@@ -14,6 +15,7 @@ INSERT INTO sessions (
     ?,
     ?,
     ?,
+    'build',
     ?,
     ?,
     ?,
@@ -44,11 +46,19 @@ ORDER BY updated_at DESC;
 UPDATE sessions
 SET
     title = ?,
+    mode = ?,
     prompt_tokens = ?,
     completion_tokens = ?,
     summary_message_id = ?,
     cost = ?,
     todos = ?
+WHERE id = ?
+RETURNING *;
+
+-- name: UpdateSessionMode :one
+UPDATE sessions
+SET
+    mode = ?
 WHERE id = ?
 RETURNING *;
 

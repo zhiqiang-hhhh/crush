@@ -17,10 +17,15 @@ import (
 
 type TodoStatus string
 
+type SessionMode string
+
 const (
 	TodoStatusPending    TodoStatus = "pending"
 	TodoStatusInProgress TodoStatus = "in_progress"
 	TodoStatusCompleted  TodoStatus = "completed"
+
+	SessionModeBuild SessionMode = "build"
+	SessionModePlan  SessionMode = "plan"
 )
 
 // HashID returns the XXH3 hash of a session ID (UUID) as a hex string.
@@ -50,6 +55,7 @@ type Session struct {
 	ID               string
 	ParentSessionID  string
 	Title            string
+	Mode             SessionMode
 	MessageCount     int64
 	PromptTokens     int64
 	CompletionTokens int64
@@ -69,6 +75,7 @@ type Service interface {
 	GetLast(ctx context.Context) (Session, error)
 	List(ctx context.Context) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
+	SetMode(ctx context.Context, id string, mode SessionMode) (Session, error)
 	UpdateTitleAndUsage(ctx context.Context, sessionID, title string, promptTokens, completionTokens int64, cost float64) error
 	Rename(ctx context.Context, id string, title string) error
 	Delete(ctx context.Context, id string) error
@@ -184,6 +191,7 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 	dbSession, err := s.q.UpdateSession(ctx, db.UpdateSessionParams{
 		ID:               session.ID,
 		Title:            session.Title,
+		Mode:             string(session.Mode),
 		PromptTokens:     session.PromptTokens,
 		CompletionTokens: session.CompletionTokens,
 		SummaryMessageID: sql.NullString{
@@ -200,6 +208,19 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 		return Session{}, err
 	}
 	session = s.fromDBItem(dbSession)
+	s.Publish(pubsub.UpdatedEvent, session)
+	return session, nil
+}
+
+func (s *service) SetMode(ctx context.Context, id string, mode SessionMode) (Session, error) {
+	dbSession, err := s.q.UpdateSessionMode(ctx, db.UpdateSessionModeParams{
+		ID:   id,
+		Mode: string(mode),
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	session := s.fromDBItem(dbSession)
 	s.Publish(pubsub.UpdatedEvent, session)
 	return session, nil
 }
@@ -246,6 +267,7 @@ func (s service) fromDBItem(item db.Session) Session {
 		ID:               item.ID,
 		ParentSessionID:  item.ParentSessionID.String,
 		Title:            item.Title,
+		Mode:             SessionMode(item.Mode),
 		MessageCount:     item.MessageCount,
 		PromptTokens:     item.PromptTokens,
 		CompletionTokens: item.CompletionTokens,

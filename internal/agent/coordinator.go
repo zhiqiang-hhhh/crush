@@ -61,6 +61,7 @@ type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	RunWithAgent(ctx context.Context, agentID, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -85,6 +86,7 @@ type coordinator struct {
 
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
+	prompts      map[string]*prompt.Prompt
 
 	readyWg errgroup.Group
 }
@@ -110,30 +112,25 @@ func NewCoordinator(
 		lspManager:  lspManager,
 		notify:      notify,
 		agents:      make(map[string]SessionAgent),
+		prompts:     make(map[string]*prompt.Prompt),
 	}
 
-	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
-	if !ok {
-		return nil, errCoderAgentNotConfigured
-	}
-
-	// TODO: make this dynamic when we support multiple agents
-	prompt, err := coderPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
-	if err != nil {
+	if err := c.initPrimaryAgent(ctx, config.AgentCoder, coderPrompt); err != nil {
 		return nil, err
 	}
-
-	agent, err := c.buildAgent(ctx, prompt, agentCfg, false)
-	if err != nil {
+	if err := c.initPrimaryAgent(ctx, config.AgentPlan, planPrompt); err != nil {
 		return nil, err
 	}
-	c.currentAgent = agent
-	c.agents[config.AgentCoder] = agent
+	c.currentAgent = c.agents[config.AgentCoder]
 	return c, nil
 }
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return c.RunWithAgent(ctx, config.AgentCoder, sessionID, prompt, attachments...)
+}
+
+func (c *coordinator) RunWithAgent(ctx context.Context, agentID, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -143,7 +140,12 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 		return nil, fmt.Errorf("failed to update models: %w", err)
 	}
 
-	model := c.currentAgent.Model()
+	agent, ok := c.agents[agentID]
+	if !ok {
+		return nil, fmt.Errorf("agent %q not configured", agentID)
+	}
+
+	model := agent.Model()
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
@@ -175,7 +177,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	}
 
 	run := func() (*fantasy.AgentResult, error) {
-		return c.currentAgent.Run(ctx, SessionAgentCall{
+		return agent.Run(ctx, SessionAgentCall{
 			SessionID:        sessionID,
 			Prompt:           prompt,
 			Attachments:      attachments,
@@ -210,6 +212,30 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	}
 
 	return result, originalErr
+}
+
+func (c *coordinator) initPrimaryAgent(ctx context.Context, agentID string, buildPrompt func(...prompt.Option) (*prompt.Prompt, error)) error {
+	agentCfg, ok := c.cfg.Config().Agents[agentID]
+	if !ok {
+		if agentID == config.AgentCoder {
+			return errCoderAgentNotConfigured
+		}
+		return fmt.Errorf("agent %q not configured", agentID)
+	}
+
+	promptTemplate, err := buildPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	if err != nil {
+		return err
+	}
+
+	agent, err := c.buildAgent(ctx, promptTemplate, agentCfg, false)
+	if err != nil {
+		return err
+	}
+
+	c.agents[agentID] = agent
+	c.prompts[agentID] = promptTemplate
+	return nil
 }
 
 func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
@@ -859,23 +885,39 @@ func isExactoSupported(modelID string) bool {
 }
 
 func (c *coordinator) Cancel(sessionID string) {
-	c.currentAgent.Cancel(sessionID)
+	for _, agent := range c.agents {
+		agent.Cancel(sessionID)
+	}
 }
 
 func (c *coordinator) CancelAll() {
-	c.currentAgent.CancelAll()
+	for _, agent := range c.agents {
+		agent.CancelAll()
+	}
 }
 
 func (c *coordinator) ClearQueue(sessionID string) {
-	c.currentAgent.ClearQueue(sessionID)
+	for _, agent := range c.agents {
+		agent.ClearQueue(sessionID)
+	}
 }
 
 func (c *coordinator) IsBusy() bool {
-	return c.currentAgent.IsBusy()
+	for _, agent := range c.agents {
+		if agent.IsBusy() {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *coordinator) IsSessionBusy(sessionID string) bool {
-	return c.currentAgent.IsSessionBusy(sessionID)
+	for _, agent := range c.agents {
+		if agent.IsSessionBusy(sessionID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *coordinator) Model() Model {
@@ -888,27 +930,47 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetModels(large, small)
+	for agentID, agent := range c.agents {
+		agent.SetModels(large, small)
 
-	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
-	if !ok {
-		return errCoderAgentNotConfigured
-	}
+		agentCfg, ok := c.cfg.Config().Agents[agentID]
+		if !ok {
+			return fmt.Errorf("agent %q not configured", agentID)
+		}
 
-	tools, err := c.buildTools(ctx, agentCfg)
-	if err != nil {
-		return err
+		tools, err := c.buildTools(ctx, agentCfg)
+		if err != nil {
+			return err
+		}
+		agent.SetTools(tools)
+
+		promptTemplate, ok := c.prompts[agentID]
+		if !ok {
+			return fmt.Errorf("prompt for agent %q not configured", agentID)
+		}
+		systemPrompt, err := promptTemplate.Build(ctx, large.Model.Provider(), large.Model.Model(), c.cfg)
+		if err != nil {
+			return err
+		}
+		agent.SetSystemPrompt(systemPrompt)
 	}
-	c.currentAgent.SetTools(tools)
 	return nil
 }
 
 func (c *coordinator) QueuedPrompts(sessionID string) int {
-	return c.currentAgent.QueuedPrompts(sessionID)
+	count := 0
+	for _, agent := range c.agents {
+		count += agent.QueuedPrompts(sessionID)
+	}
+	return count
 }
 
 func (c *coordinator) QueuedPromptsList(sessionID string) []string {
-	return c.currentAgent.QueuedPromptsList(sessionID)
+	var prompts []string
+	for _, agent := range c.agents {
+		prompts = append(prompts, agent.QueuedPromptsList(sessionID)...)
+	}
+	return prompts
 }
 
 func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {

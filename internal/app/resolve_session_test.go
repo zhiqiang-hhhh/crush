@@ -60,6 +60,16 @@ func (m *mockSessionService) Save(_ context.Context, s session.Session) (session
 	return s, nil
 }
 
+func (m *mockSessionService) SetMode(_ context.Context, id string, mode session.SessionMode) (session.Session, error) {
+	for i, s := range m.sessions {
+		if s.ID == id {
+			m.sessions[i].Mode = mode
+			return m.sessions[i], nil
+		}
+	}
+	return session.Session{ID: id, Mode: mode}, nil
+}
+
 func (m *mockSessionService) UpdateTitleAndUsage(context.Context, string, string, int64, int64, float64) error {
 	return nil
 }

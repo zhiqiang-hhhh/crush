@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/styles"
@@ -423,6 +424,8 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}),
 		NewCommandItem(c.com.Styles, "switch_model", "Switch Model", "ctrl+l", ActionOpenDialog{ModelsID}),
 		NewCommandItem(c.com.Styles, "connect_provider", "Connect Provider", "", ActionConnectProvider{}),
+		NewCommandItem(c.com.Styles, "mode_plan", "Plan Mode (/plan)", "", ActionSwitchMode{Mode: session.SessionModePlan}),
+		NewCommandItem(c.com.Styles, "mode_build", "Build Mode (/build)", "", ActionSwitchMode{Mode: session.SessionModeBuild}),
 	}
 
 	// Only show compact command if there's an active session

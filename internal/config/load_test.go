@@ -504,6 +504,10 @@ func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, allToolNames(), coderAgent.AllowedTools)
 
+	planAgent, ok := cfg.Agents[AgentPlan]
+	require.True(t, ok)
+	assert.Equal(t, []string{"glob", "grep", "ls", "sourcegraph", "view"}, planAgent.AllowedTools)
+
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
 	assert.Equal(t, []string{"glob", "grep", "ls", "sourcegraph", "view"}, taskAgent.AllowedTools)
@@ -525,6 +529,10 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 	require.True(t, ok)
 
 	assert.Equal(t, []string{"agent", "bash", "job_output", "job_kill", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "fetch", "agentic_fetch", "glob", "ls", "sourcegraph", "todos", "view", "write", "list_mcp_resources", "read_mcp_resource"}, coderAgent.AllowedTools)
+
+	planAgent, ok := cfg.Agents[AgentPlan]
+	require.True(t, ok)
+	assert.Equal(t, []string{"glob", "ls", "sourcegraph", "view"}, planAgent.AllowedTools)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
@@ -548,6 +556,10 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
 	assert.Equal(t, []string{"agent", "bash", "job_output", "job_kill", "download", "edit", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "fetch", "agentic_fetch", "todos", "write", "list_mcp_resources", "read_mcp_resource"}, coderAgent.AllowedTools)
+
+	planAgent, ok := cfg.Agents[AgentPlan]
+	require.True(t, ok)
+	assert.Len(t, planAgent.AllowedTools, 0)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)

@@ -196,6 +196,7 @@ type UI struct {
 
 	readyPlaceholder   string
 	workingPlaceholder string
+	draftMode          session.SessionMode
 
 	// Completions state
 	completions              *completions.Completions
@@ -321,6 +322,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		notifyWindowFocused: true,
 		initialSessionID:    initialSessionID,
 		continueLastSession: continueLast,
+		draftMode:           session.SessionModeBuild,
 	}
 
 	status := NewStatus(com, ui)
@@ -496,6 +498,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.setState(uiChat, m.focus)
 		m.session = msg.session
+		m.applySessionMode(msg.session.Mode)
 		m.sessionFiles = msg.files
 		cmds = append(cmds, m.startLSPs(msg.lspFilePaths()))
 		msgs, err := m.com.App.Messages.List(context.Background(), m.session.ID)
@@ -576,6 +579,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.session != nil && msg.Payload.ID == m.session.ID {
 			prevHasInProgress := hasInProgressTodo(m.session.Todos)
 			m.session = &msg.Payload
+			m.applySessionMode(msg.Payload.Mode)
 			if !prevHasInProgress && hasInProgressTodo(m.session.Todos) {
 				m.todoIsSpinning = true
 				cmds = append(cmds, m.todoSpinner.Tick)
@@ -869,6 +873,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Textarea placeholder logic
 		if m.isAgentBusy() {
 			m.textarea.Placeholder = m.workingPlaceholder
+		} else if m.activeSessionMode() == session.SessionModePlan {
+			m.textarea.Placeholder = "Plan mode"
 		} else {
 			m.textarea.Placeholder = m.readyPlaceholder
 		}
@@ -1403,6 +1409,13 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			return util.NewInfoMsg("Transparent background " + status)
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionSwitchMode:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		m.applySessionMode(msg.Mode)
+		cmds = append(cmds,
+			m.persistSessionMode(msg.Mode),
+			util.ReportInfo(fmt.Sprintf("Mode changed to %s.", normalizeSessionMode(msg.Mode))),
+		)
 	case dialog.ActionQuit:
 		cmds = append(cmds, tea.Quit)
 	case dialog.ActionEnableDockerMCP:
@@ -1792,6 +1805,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				value = strings.TrimSpace(value)
 				if value == "exit" || value == "quit" {
 					return m.openQuitDialog()
+				}
+
+				if cmd := m.handleModeCommand(value); cmd != nil {
+					return cmd
 				}
 
 				attachments := m.attachments.List()
@@ -2948,6 +2965,7 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 	}
 
 	var cmds []tea.Cmd
+	mode := m.activeSessionMode()
 	if !m.hasSession() {
 		newSession, err := m.com.App.Sessions.Create(context.Background(), "New Session")
 		if err != nil {
@@ -2957,10 +2975,17 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 			m.isCompact = true
 		}
 		if newSession.ID != "" {
+			newSession.Mode = mode
 			m.session = &newSession
 			cmds = append(cmds, m.loadSession(newSession.ID))
 		}
 		m.setState(uiChat, m.focus)
+	}
+	if m.session != nil {
+		m.session.Mode = mode
+		if mode != session.SessionModeBuild {
+			cmds = append(cmds, m.persistSessionMode(mode))
+		}
 	}
 
 	ctx := context.Background()
@@ -2974,8 +2999,9 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 
 	// Capture session ID to avoid race with main goroutine updating m.session.
 	sessionID := m.session.ID
+	agentID := modeAgentID(mode)
 	cmds = append(cmds, func() tea.Msg {
-		_, err := m.com.App.AgentCoordinator.Run(context.Background(), sessionID, content, attachments...)
+		_, err := m.com.App.AgentCoordinator.RunWithAgent(context.Background(), agentID, sessionID, content, attachments...)
 		if err != nil {
 			isCancelErr := errors.Is(err, context.Canceled)
 			isPermissionErr := errors.Is(err, permission.ErrorPermissionDenied)
@@ -3256,6 +3282,7 @@ func (m *UI) newSession() tea.Cmd {
 	m.session = nil
 	m.sessionFiles = nil
 	m.sessionFileReads = nil
+	m.draftMode = session.SessionModeBuild
 	m.setState(uiLanding, uiFocusEditor)
 	m.textarea.Focus()
 	m.chat.Blur()
