@@ -137,8 +137,9 @@ type sessionAgent struct {
 	sessions             session.Service
 	messages             message.Service
 	fileTracker          filetracker.Service
-	disableAutoSummarize bool
-	autoTitle            bool
+	disableAutoSummarize  bool
+	maxTokensToSummarize int64
+	autoTitle             bool
 	isYolo               bool
 	dataDir              string
 	notify               pubsub.Publisher[notify.Notification]
@@ -157,6 +158,7 @@ type SessionAgentOptions struct {
 	IsSubAgent           bool
 	FileTracker          filetracker.Service
 	DisableAutoSummarize bool
+	MaxTokensToSummarize int64
 	AutoTitle            bool
 	IsYolo               bool
 	DataDir              string
@@ -179,8 +181,9 @@ func NewSessionAgent(
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
 		fileTracker:          opts.FileTracker,
-		disableAutoSummarize: opts.DisableAutoSummarize,
-		autoTitle:            opts.AutoTitle,
+		disableAutoSummarize:  opts.DisableAutoSummarize,
+		maxTokensToSummarize: opts.MaxTokensToSummarize,
+		autoTitle:             opts.AutoTitle,
 		tools:                csync.NewSliceFrom(opts.Tools),
 		isYolo:               opts.IsYolo,
 		dataDir:              opts.DataDir,
@@ -479,7 +482,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				tokens := currentSession.CompletionTokens + currentSession.PromptTokens
 				remaining := cw - tokens
 				var threshold int64
-				if cw > largeContextWindowThreshold {
+				if a.maxTokensToSummarize > 0 {
+					threshold = a.maxTokensToSummarize
+				} else if cw > largeContextWindowThreshold {
 					threshold = largeContextWindowBuffer
 				} else {
 					threshold = int64(float64(cw) * smallContextWindowRatio)

@@ -444,6 +444,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		IsSubAgent:           isSubAgent,
 		FileTracker:          c.filetracker,
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
+		MaxTokensToSummarize: c.cfg.Config().Options.MaxTokensToSummarize,
 		AutoTitle:            c.cfg.Config().Options.AutoTitle,
 		IsYolo:               c.permissions.SkipRequests(),
 		DataDir:              c.cfg.Config().Options.DataDirectory,
