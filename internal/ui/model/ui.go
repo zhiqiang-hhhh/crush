@@ -1143,7 +1143,6 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 		}
 	case message.Tool:
 		for _, tr := range msg.ToolResults() {
-			tr := tr
 			m.updatePlanMode(tr)
 			toolItem := m.chat.MessageItem(tr.ToolCallID)
 			if toolItem == nil {
