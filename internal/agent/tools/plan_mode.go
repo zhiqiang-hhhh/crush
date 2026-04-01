@@ -3,9 +3,11 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/askuser"
 )
 
 const PlanModeToolName = "plan_mode"
@@ -24,7 +26,7 @@ type PlanModeResponseMetadata struct {
 	Plan       string `json:"plan,omitempty"`
 }
 
-func NewPlanModeTool() fantasy.AgentTool {
+func NewPlanModeTool(svc askuser.Service) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		PlanModeToolName,
 		string(planModeDescription),
@@ -46,7 +48,34 @@ func NewPlanModeTool() fantasy.AgentTool {
 				), nil
 			}
 
-			// mode == "implement"
+			// mode == "implement": ask user for confirmation before proceeding.
+			sessionID := GetSessionFromContext(ctx)
+			req := askuser.QuestionRequest{
+				SessionID:  sessionID,
+				ToolCallID: call.ID,
+				Question:   "Exit plan mode and begin implementation?",
+				Header:     "Plan Mode",
+				Options: []askuser.Option{
+					{Label: "Approve", Description: "Exit plan mode and start implementing"},
+					{Label: "Reject", Description: "Stay in plan mode and revise the plan"},
+				},
+				AllowText: false,
+			}
+
+			answers, err := svc.Ask(ctx, req)
+			if err != nil {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to get user confirmation: %s", err)), nil
+			}
+
+			if len(answers) == 0 || strings.EqualFold(answers[0], "Reject") {
+				metadata.PlanActive = true
+				metadata.Mode = "plan"
+				return fantasy.WithResponseMetadata(
+					fantasy.NewTextResponse("User rejected exiting plan mode. Stay in plan mode and revise your plan based on user feedback."),
+					metadata,
+				), nil
+			}
+
 			metadata.PlanActive = false
 			metadata.Plan = params.Plan
 
