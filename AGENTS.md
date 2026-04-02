@@ -75,7 +75,8 @@ internal/
 
 ## Build/Test/Lint Commands
 
-- **Build**: `go build .` or `go run .`
+- **Build**: `CGO_ENABLED=0 go build -o crush .` — always output the binary,
+  never use bare `go build ./...` for verification only.
 - **Test**: `task test` or `go test ./...` (run single test:
   `go test ./internal/llm/prompt -run TestGetContextFromPaths`)
 - **Update Golden Files**: `go test ./... -update` (regenerates `.golden`
