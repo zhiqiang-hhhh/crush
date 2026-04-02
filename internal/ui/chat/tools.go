@@ -681,7 +681,8 @@ func toolOutputCodeContent(sty *styles.Styles, path, content string, offset, wid
 	numFmt := fmt.Sprintf("%%%dd", maxDigits)
 
 	bodyWidth := width - toolBodyLeftPaddingTotal
-	codeWidth := bodyWidth - maxDigits
+	lineNumWidth := maxDigits + sty.Tool.ContentLineNumber.GetHorizontalPadding()
+	codeWidth := bodyWidth - lineNumWidth
 
 	var out []string
 	for i, ln := range highlightedLines {

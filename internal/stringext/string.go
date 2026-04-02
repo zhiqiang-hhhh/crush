@@ -17,6 +17,6 @@ func Capitalize(text string) string {
 func NormalizeSpace(content string) string {
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.ReplaceAll(content, "\t", "    ")
-	content = strings.TrimSpace(content)
+	content = strings.TrimRight(content, " \t\n\r")
 	return content
 }
