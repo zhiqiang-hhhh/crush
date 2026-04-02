@@ -14,6 +14,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/filepathext"
+	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
 )
 
@@ -29,21 +30,21 @@ type DownloadPermissionsParams struct {
 	Timeout  int    `json:"timeout,omitempty"`
 }
 
-const DownloadToolName = "download"
+const (
+	DownloadToolName = "download"
+
+	// MaxDownloadSize is the maximum allowed download size (100 MB).
+	MaxDownloadSize = 100 * 1024 * 1024
+)
 
 //go:embed download.md
 var downloadDescription []byte
 
 func NewDownloadTool(permissions permission.Service, workingDir string, client *http.Client) fantasy.AgentTool {
 	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.MaxIdleConns = 100
-		transport.MaxIdleConnsPerHost = 10
-		transport.IdleConnTimeout = 90 * time.Second
-
 		client = &http.Client{
 			Timeout:   5 * time.Minute, // Default 5 minute timeout for downloads
-			Transport: transport,
+			Transport: SafeTransport(),
 		}
 	}
 	return fantasy.NewParallelAgentTool(
@@ -62,9 +63,41 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				return fantasy.NewTextErrorResponse("URL must start with http:// or https://"), nil
 			}
 
+			if IsPrivateURL(params.URL) {
+				return fantasy.NewTextErrorResponse("access to private/internal network addresses is not allowed"), nil
+			}
+
 			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
+
+			if !fsext.HasPrefix(filePath, workingDir) {
+				return fantasy.NewTextErrorResponse("file_path must be within the working directory"), nil
+			}
+
 			relPath, _ := filepath.Rel(workingDir, filePath)
 			relPath = filepath.ToSlash(cmp.Or(relPath, filePath))
+
+			sessionID := GetSessionFromContext(ctx)
+			if sessionID == "" {
+				return fantasy.ToolResponse{}, fmt.Errorf("session_id is required")
+			}
+
+			p, err := permissions.Request(ctx,
+				permission.CreatePermissionRequest{
+					SessionID:   sessionID,
+					Path:        fsext.PathOrPrefix(filePath, workingDir),
+					ToolCallID:  call.ID,
+					ToolName:    DownloadToolName,
+					Action:      "download",
+					Description: fmt.Sprintf("Download %s to %s", params.URL, filePath),
+					Params:      DownloadPermissionsParams(params),
+				},
+			)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !p {
+				return fantasy.ToolResponse{}, permission.ErrorPermissionDenied
+			}
 
 			// Handle timeout with context
 			requestCtx := ctx
@@ -95,7 +128,7 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d", resp.StatusCode)), nil
 			}
 
-			// Create parent directories if they don't exist
+			// Create parent directories after permission check.
 			if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("failed to create parent directories: %s", err)), nil
 			}
@@ -107,10 +140,8 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 			}
 			defer outFile.Close()
 
-			// Copy data without an explicit size limit.
-			// The overall download is still constrained by the HTTP client's timeout
-			// and any upstream server limits.
-			bytesWritten, err := io.Copy(outFile, resp.Body)
+			// Limit download size to prevent disk exhaustion.
+			bytesWritten, err := io.Copy(outFile, io.LimitReader(resp.Body, MaxDownloadSize))
 			if err != nil {
 				outFile.Close()
 				os.Remove(filePath)
@@ -121,6 +152,9 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 			responseMsg := fmt.Sprintf("Successfully downloaded %d bytes to %s", bytesWritten, relPath)
 			if contentType != "" {
 				responseMsg += fmt.Sprintf(" (Content-Type: %s)", contentType)
+			}
+			if bytesWritten >= MaxDownloadSize {
+				responseMsg += fmt.Sprintf("\n\nWarning: download was truncated at %d bytes", MaxDownloadSize)
 			}
 
 			return fantasy.NewTextResponse(responseMsg), nil
