@@ -211,11 +211,20 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		a.messageQueue.Update(call.SessionID, func(existing []SessionAgentCall) []SessionAgentCall {
 			return append(existing, call)
 		})
+		slog.Debug("Message queued (session busy)",
+			"session_id", call.SessionID,
+			"queue_size", a.QueuedPrompts(call.SessionID),
+			"prompt_preview", truncateString(call.Prompt, 80),
+		)
 		return nil, nil
 	}
 
 	// Merge any previously queued messages into the current prompt.
 	if queued, ok := a.messageQueue.Take(call.SessionID); ok && len(queued) > 0 {
+		slog.Debug("Merging queued messages",
+			"session_id", call.SessionID,
+			"queued_count", len(queued),
+		)
 		var merged strings.Builder
 		for _, q := range queued {
 			if q.Prompt != "" {
@@ -245,8 +254,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		}
 	}
 
+	var mcpInstructions string
 	if s := instructions.String(); s != "" {
-		systemPrompt += "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
+		mcpInstructions = "<mcp-instructions>\n" + s + "\n</mcp-instructions>"
 	}
 
 	if len(agentTools) > 0 {
@@ -265,6 +275,41 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	currentSession, err := a.sessions.Get(ctx, call.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
+	}
+
+	// Pre-flight summarize: when maxTokensToSummarize is configured, check
+	// current token usage *before* sending to the LLM. If the threshold is
+	// already reached, summarize first then replay the user message with
+	// fresh context.
+	if a.maxTokensToSummarize > 0 && !a.disableAutoSummarize && !a.circuitBreaker.isTripped(call.SessionID) {
+		tokens := currentSession.CompletionTokens + currentSession.PromptTokens
+		if tokens >= a.maxTokensToSummarize {
+			if call.autoSummarizeDepth >= maxAutoSummarizeDepth {
+				slog.Warn("Skipping pre-flight auto-summarize, max depth reached",
+					"session_id", call.SessionID,
+					"depth", call.autoSummarizeDepth,
+				)
+			} else {
+				slog.Info("Pre-flight auto-summarize triggered",
+					"session_id", call.SessionID,
+					"used_tokens", tokens,
+					"threshold", a.maxTokensToSummarize,
+				)
+				if summarizeErr := a.Summarize(ctx, call.SessionID, call.ProviderOptions); summarizeErr != nil {
+					a.circuitBreaker.recordFailure(call.SessionID)
+					slog.Error("Pre-flight auto-summarize failed", "error", summarizeErr)
+					return nil, fmt.Errorf("pre-flight auto-summarize failed: %w", summarizeErr)
+				}
+				a.circuitBreaker.recordSuccess(call.SessionID)
+				call.autoSummarizeDepth++
+				slog.Debug("Pre-flight summarize done, recursing into Run()",
+					"session_id", call.SessionID,
+					"queue_size", a.QueuedPrompts(call.SessionID),
+					"prompt_preview", truncateString(call.Prompt, 80),
+				)
+				return a.Run(ctx, call)
+			}
+		}
 	}
 
 	msgs, err := a.getSessionMessages(ctx, currentSession)
@@ -387,6 +432,18 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				}
 			}
 
+			if mcpInstructions != "" {
+				mcpMsg := fantasy.NewSystemMessage(mcpInstructions)
+				insertIdx := lastSystemRoleInx + 1
+				prepared.Messages = slices.Insert(prepared.Messages, insertIdx, mcpMsg)
+				// Move the cache breakpoint from the base system prompt
+				// to the MCP instructions message. This keeps the total
+				// number of breakpoints unchanged (still 4) while letting
+				// Anthropic's prefix cache cover the base prompt naturally.
+				prepared.Messages[lastSystemRoleInx].ProviderOptions = nil
+				prepared.Messages[insertIdx].ProviderOptions = a.getCacheControlOptions()
+			}
+
 			if promptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 			}
@@ -460,7 +517,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			return a.messages.Update(ctx, *currentAssistant)
 		},
 		OnRetry: func(err *fantasy.ProviderError, delay time.Duration) {
-			// TODO: implement
+			slog.Warn("Retrying LLM request",
+				"error", err.Message,
+				"status_code", err.StatusCode,
+				"delay", delay,
+				"session", call.SessionID,
+			)
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
 			toolCall := message.ToolCall{
@@ -526,18 +588,20 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		},
 		StopWhen: []fantasy.StopCondition{
 			func(_ []fantasy.StepResult) bool {
-				cw := int64(largeModel.CatwalkCfg.ContextWindow)
+				sessionLock.Lock()
 				tokens := currentSession.CompletionTokens + currentSession.PromptTokens
+				sessionLock.Unlock()
+				cw := int64(largeModel.CatwalkCfg.ContextWindow)
 				remaining := cw - tokens
-				var threshold int64
+				var shouldTrigger bool
 				if a.maxTokensToSummarize > 0 {
-					threshold = a.maxTokensToSummarize
+					shouldTrigger = tokens >= a.maxTokensToSummarize
 				} else if cw > largeContextWindowThreshold {
-					threshold = largeContextWindowBuffer
+					shouldTrigger = remaining <= largeContextWindowBuffer
 				} else {
-					threshold = int64(float64(cw) * smallContextWindowRatio)
+					shouldTrigger = remaining <= int64(float64(cw)*smallContextWindowRatio)
 				}
-				if (remaining <= threshold) && !a.disableAutoSummarize && !a.circuitBreaker.isTripped(call.SessionID) {
+				if shouldTrigger && !a.disableAutoSummarize && !a.circuitBreaker.isTripped(call.SessionID) {
 					shouldSummarize = true
 					return true
 				}
@@ -704,13 +768,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				return nil, summarizeErr
 			}
 			a.circuitBreaker.recordSuccess(call.SessionID)
-			// If the agent wasn't done...
+			// If the agent wasn't done, continue with fresh context.
 			if len(currentAssistant.ToolCalls()) > 0 {
 				call.Prompt = "The conversation was automatically summarized because the context got too long. The summary above contains the full conversation state including any tool results and user answers. Please continue where you left off."
 				call.autoSummarizeDepth++
-				a.messageQueue.Update(call.SessionID, func(existing []SessionAgentCall) []SessionAgentCall {
-					return append(existing, call)
-				})
+				return a.Run(ctx, call)
 			}
 		}
 	}
@@ -731,18 +793,59 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		}
 	}
 
+	// Drain the queue: if there are queued messages, process the next one.
+	// This ensures queued user messages are not stranded after a run completes.
+	if result, err := a.drainQueue(ctx, call.SessionID); result != nil || err != nil {
+		return result, err
+	}
+
 	return result, err
 }
 
+// drainQueue processes any queued messages for the given session.
+// It takes the first queued item and runs it; the rest are re-queued
+// for the recursive Run to merge. Returns (nil, nil) if the queue
+// was empty.
+func (a *sessionAgent) drainQueue(ctx context.Context, sessionID string) (*fantasy.AgentResult, error) {
+	queued, ok := a.messageQueue.Take(sessionID)
+	if !ok || len(queued) == 0 {
+		return nil, nil
+	}
+	slog.Debug("Draining queued messages",
+		"session_id", sessionID,
+		"count", len(queued),
+	)
+	next := queued[0]
+	if len(queued) > 1 {
+		remaining := queued[1:]
+		a.messageQueue.Update(sessionID, func(existing []SessionAgentCall) []SessionAgentCall {
+			return append(remaining, existing...)
+		})
+	}
+	return a.Run(ctx, next)
+}
+
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions) error {
+	slog.Debug("Summarize() starting",
+		"session_id", sessionID,
+		"is_busy", a.IsSessionBusy(sessionID),
+		"queue_size", a.QueuedPrompts(sessionID),
+	)
 	if a.IsSessionBusy(sessionID) {
 		return ErrSessionBusy
 	}
 
 	genCtx, cancel := context.WithCancel(ctx)
 	a.activeRequests.Set(sessionID, cancel)
-	defer a.activeRequests.Del(sessionID)
-	defer cancel()
+
+	// Release the active request and drain the queue when done.
+	// We avoid defer for activeRequests.Del so we can drain the
+	// queue after the session is no longer busy.
+	defer func() {
+		cancel()
+		a.activeRequests.Del(sessionID)
+		a.drainQueue(ctx, sessionID)
+	}()
 
 	// Copy mutable fields under lock to avoid races with SetModels.
 	summaryModel := a.SummaryModel()
@@ -879,6 +982,11 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 	// now-truncated conversation to prevent stale state.
 	tools.ResetCache()
 	a.circuitBreaker.recordSuccess(sessionID)
+
+	slog.Debug("Summarize() completed",
+		"session_id", sessionID,
+		"queue_size", a.QueuedPrompts(sessionID),
+	)
 
 	return nil
 }
