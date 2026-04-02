@@ -232,7 +232,9 @@ type UI struct {
 	lspStates map[string]app.LSPClientInfo
 
 	// mcp
-	mcpStates map[string]mcp.ClientInfo
+	mcpStates      map[string]mcp.ClientInfo
+	mcpItemRects   []mcpClickTarget
+	landingMCPRect image.Rectangle
 
 	// sidebarLogo keeps a cached version of the sidebar sidebarLogo.
 	sidebarLogo string
@@ -783,6 +785,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case TextPreviewMsg:
 		m.openTextPreviewDialog(msg.Title, msg.Text)
+	case DiffPreviewMsg:
+		m.openDiffPreviewDialog(msg.FilePath, msg.OldContent, msg.NewContent)
 	case tea.MouseClickMsg:
 		// Pass mouse events to dialogs first if any are open.
 		if m.dialog.HasDialogs() {
@@ -820,17 +824,23 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch m.state {
+		case uiLanding:
+			if cmd := m.handleMCPClick(msg.X, msg.Y); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case uiChat:
 			x, y := msg.X, msg.Y
 			// Adjust for chat area position
 			x -= m.layout.main.Min.X
 			y -= m.layout.main.Min.Y
-			if !image.Pt(msg.X, msg.Y).In(m.layout.sidebar) {
-				if handled, cmd := m.chat.HandleMouseDown(x, y); handled {
-					m.lastClickTime = time.Now()
-					if cmd != nil {
-						cmds = append(cmds, cmd)
-					}
+			if image.Pt(msg.X, msg.Y).In(m.layout.sidebar) {
+				if cmd := m.handleMCPClick(msg.X, msg.Y); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			} else if handled, cmd := m.chat.HandleMouseDown(x, y); handled {
+				m.lastClickTime = time.Now()
+				if cmd != nil {
+					cmds = append(cmds, cmd)
 				}
 			}
 		}
@@ -879,7 +889,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseReleaseMsg:
 		// Pass mouse events to dialogs first if any are open.
 		if m.dialog.HasDialogs() {
-			m.dialog.Update(msg)
+			if cmd := m.handleDialogMsg(msg); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			return m, tea.Batch(cmds...)
 		}
 
@@ -1217,7 +1229,7 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 		if existingToolItem == nil {
 			pendingResult := m.pendingToolResults[tc.ID]
 			delete(m.pendingToolResults, tc.ID)
-			items = append(items, chat.NewToolMessageItem(m.com.Styles, msg.ID, tc, pendingResult, false))
+			items = append(items, chat.NewToolMessageItem(m.com.Styles, msg.ID, tc, pendingResult, false, msg.IsPlanMode))
 		}
 	}
 
@@ -1283,19 +1295,19 @@ func (m *UI) handleChildSessionMessage(event pubsub.Event[message.Message]) tea.
 	// Get existing nested tools.
 	nestedTools := agentItem.NestedTools()
 
+	// Build an index from tool call ID to slice position for O(1) lookups.
+	toolIndex := make(map[string]int, len(nestedTools))
+	for i, nt := range nestedTools {
+		toolIndex[nt.ToolCall().ID] = i
+	}
+
 	// Update or create nested tool calls.
 	for _, tc := range event.Payload.ToolCalls() {
-		found := false
-		for _, existingTool := range nestedTools {
-			if existingTool.ToolCall().ID == tc.ID {
-				existingTool.SetToolCall(tc)
-				found = true
-				break
-			}
-		}
-		if !found {
+		if idx, ok := toolIndex[tc.ID]; ok {
+			nestedTools[idx].SetToolCall(tc)
+		} else {
 			// Create a new nested tool item.
-			nestedItem := chat.NewToolMessageItem(m.com.Styles, event.Payload.ID, tc, nil, false)
+			nestedItem := chat.NewToolMessageItem(m.com.Styles, event.Payload.ID, tc, nil, false, m.planMode)
 			if simplifiable, ok := nestedItem.(chat.Compactable); ok {
 				simplifiable.SetCompact(true)
 			}
@@ -1304,17 +1316,15 @@ func (m *UI) handleChildSessionMessage(event pubsub.Event[message.Message]) tea.
 					cmds = append(cmds, cmd)
 				}
 			}
+			toolIndex[tc.ID] = len(nestedTools)
 			nestedTools = append(nestedTools, nestedItem)
 		}
 	}
 
 	// Update nested tool results.
 	for _, tr := range event.Payload.ToolResults() {
-		for _, nestedTool := range nestedTools {
-			if nestedTool.ToolCall().ID == tr.ToolCallID {
-				nestedTool.SetResult(&tr)
-				break
-			}
+		if idx, ok := toolIndex[tr.ToolCallID]; ok {
+			nestedTools[idx].SetResult(&tr)
 		}
 	}
 
@@ -1506,6 +1516,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionDisableDockerMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.disableDockerMCP)
+	case dialog.ActionToggleMCP:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.toggleMCP(msg.Name, msg.Disable))
 	case dialog.ActionInitializeProject:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before summarizing session..."))
@@ -2209,6 +2222,38 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 				dialogRect.Max.X-landingPad,
 				editorTop+editorH,
 			)
+		}
+
+		// Track MCP item positions on landing page for click handling.
+		mcpInfoStr := m.landingMCPInfo(innerWidth)
+		if mcpInfoStr != "" {
+			modelInfo := m.modelInfo(innerWidth)
+			// In landingView: logo + blank + divider + blank + cwd + modelInfo + blank + mcpInfo
+			crushLogoH := lipgloss.Height(logo.LandingRender(m.com.Styles, m.com.Styles.LogoTitleColorA, m.com.Styles.LogoTitleColorB))
+			cwdH := 1
+			modelInfoH := lipgloss.Height(modelInfo)
+			// logo + blank(1) + divider(1) + blank(1) + cwd + modelInfo + blank(1) + mcpInfo
+			mcpOffsetInLanding := crushLogoH + 1 + 1 + 1 + cwdH + modelInfoH + 1
+			mcpH := lipgloss.Height(mcpInfoStr)
+			mcpTopY := dialogRect.Min.Y + 1 + mcpOffsetInLanding // +1 for padding top
+			sortedMCPs := m.com.Config().MCP.Sorted()
+			m.mcpItemRects = m.mcpItemRects[:0]
+			for i, entry := range sortedMCPs {
+				if i >= mcpH {
+					break
+				}
+				m.mcpItemRects = append(m.mcpItemRects, mcpClickTarget{
+					Name: entry.Name,
+					Rect: image.Rect(
+						dialogRect.Min.X+landingPad,
+						mcpTopY+i,
+						dialogRect.Max.X-landingPad,
+						mcpTopY+i+1,
+					),
+				})
+			}
+		} else {
+			m.mcpItemRects = m.mcpItemRects[:0]
 		}
 
 		layout.status = image.Rectangle{}
@@ -3252,6 +3297,12 @@ func (m *UI) openTextPreviewDialog(title, text string) {
 	m.dialog.OpenDialog(d)
 }
 
+func (m *UI) openDiffPreviewDialog(filePath, oldContent, newContent string) {
+	m.dialog.CloseDialog(dialog.DiffPreviewID)
+	d := dialog.NewDiffPreview(m.com, filePath, oldContent, newContent)
+	m.dialog.OpenDialog(d)
+}
+
 // openModelsDialog opens the models dialog.
 func (m *UI) openModelsDialog() tea.Cmd {
 	if m.dialog.ContainsDialog(dialog.ModelsID) {
@@ -3910,6 +3961,53 @@ func (m *UI) disableDockerMCP() tea.Msg {
 	}
 
 	return util.NewInfoMsg("Docker MCP disabled successfully")
+}
+
+func (m *UI) toggleMCP(name string, disable bool) tea.Cmd {
+	return func() tea.Msg {
+		store := m.com.Store()
+		if disable {
+			if err := mcp.DisableSingle(store, name); err != nil {
+				return util.ReportError(fmt.Errorf("failed to disable MCP %s: %w", name, err))()
+			}
+			if cfg, ok := store.Config().MCP[name]; ok {
+				cfg.Disabled = true
+				store.Config().MCP[name] = cfg
+			}
+			if err := m.persistMCPDisabled(store, name, true); err != nil {
+				return util.ReportError(err)()
+			}
+			return util.NewInfoMsg(fmt.Sprintf("MCP %s disabled", name))
+		}
+
+		if cfg, ok := store.Config().MCP[name]; ok {
+			cfg.Disabled = false
+			store.Config().MCP[name] = cfg
+		}
+		ctx := context.Background()
+		if err := mcp.InitializeSingle(ctx, name, store); err != nil {
+			return TextPreviewMsg{
+				Title: fmt.Sprintf("Failed to enable MCP: %s", name),
+				Text:  err.Error(),
+			}
+		}
+		if err := m.persistMCPDisabled(store, name, false); err != nil {
+			return util.ReportError(err)()
+		}
+		return util.NewInfoMsg(fmt.Sprintf("MCP %s enabled", name))
+	}
+}
+
+func (m *UI) persistMCPDisabled(store *config.ConfigStore, name string, disabled bool) error {
+	scope := config.ScopeGlobal
+	if store.HasConfigField(config.ScopeWorkspace, "mcp."+name) {
+		scope = config.ScopeWorkspace
+	}
+	key := "mcp." + name + ".disabled"
+	if disabled {
+		return store.SetConfigField(scope, key, true)
+	}
+	return store.RemoveConfigField(scope, key)
 }
 
 // renderLogo renders the Crush logo with the given styles and dimensions.

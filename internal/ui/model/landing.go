@@ -37,16 +37,25 @@ func (m *UI) landingView(width int) string {
 	cwd := common.PrettyPath(t, m.com.Store().WorkingDir(), width)
 	modelInfo := m.modelInfo(width)
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
+	parts := []string{
 		crushLogo,
 		"",
 		divider,
 		"",
 		cwd,
 		modelInfo,
-		"",
-		divider,
+	}
+
+	mcpInfo := m.landingMCPInfo(width)
+	if mcpInfo != "" {
+		parts = append(parts, "", mcpInfo)
+	}
+
+	parts = append(parts, "", divider)
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		parts...,
 	)
 }
 

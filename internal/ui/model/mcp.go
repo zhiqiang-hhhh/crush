@@ -2,14 +2,21 @@ package model
 
 import (
 	"fmt"
+	"image"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 )
+
+type mcpClickTarget struct {
+	Name string
+	Rect image.Rectangle
+}
 
 // mcpInfo renders the MCP status section showing active MCP clients and their
 // tool/prompt counts.
@@ -104,4 +111,36 @@ func mcpList(t *styles.Styles, mcps []mcp.ClientInfo, width, maxItems int) strin
 		return lipgloss.JoinVertical(lipgloss.Left, visibleItems...)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, renderedMcps...)
+}
+
+func (m *UI) landingMCPInfo(width int) string {
+	var mcps []mcp.ClientInfo
+	t := m.com.Styles
+
+	for _, entry := range m.com.Config().MCP.Sorted() {
+		if state, ok := m.mcpStates[entry.Name]; ok {
+			mcps = append(mcps, state)
+		}
+	}
+
+	if len(mcps) == 0 {
+		return ""
+	}
+
+	return mcpList(t, mcps, width, len(mcps))
+}
+
+func (m *UI) handleMCPClick(x, y int) tea.Cmd {
+	pt := image.Pt(x, y)
+	for _, target := range m.mcpItemRects {
+		if pt.In(target.Rect) {
+			state, ok := m.mcpStates[target.Name]
+			if !ok {
+				return nil
+			}
+			disable := state.State != mcp.StateDisabled
+			return m.toggleMCP(target.Name, disable)
+		}
+	}
+	return nil
 }

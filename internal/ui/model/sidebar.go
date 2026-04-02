@@ -3,6 +3,7 @@ package model
 import (
 	"cmp"
 	"fmt"
+	"image"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent"
@@ -168,6 +169,29 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 	lspSection := m.lspInfo(width, maxLSPs, true)
 	mcpSection := m.mcpInfo(width, maxMCPs, true)
 	filesSection := m.filesInfo(m.com.Store().WorkingDir(), width, maxFiles, true)
+
+	// Calculate MCP item positions for click handling.
+	headerH := lipgloss.Height(sidebarHeader)
+	filesH := lipgloss.Height(filesSection)
+	lspH := lipgloss.Height(lspSection)
+
+	// mcpSection has: title (1 line) + blank (1 line) + items
+	// The content above mcpSection: header + files + blank + lsp + blank
+	mcpSectionY := area.Min.Y + headerH + filesH + 1 + lspH + 1
+	// MCP items start after the section title (1 line) + blank line (1 line)
+	mcpItemsStartY := mcpSectionY + 2
+
+	sortedMCPs := m.com.Config().MCP.Sorted()
+	m.mcpItemRects = m.mcpItemRects[:0]
+	for i, mcpEntry := range sortedMCPs {
+		if i >= maxMCPs {
+			break
+		}
+		m.mcpItemRects = append(m.mcpItemRects, mcpClickTarget{
+			Name: mcpEntry.Name,
+			Rect: image.Rect(area.Min.X, mcpItemsStartY+i, area.Max.X, mcpItemsStartY+i+1),
+		})
+	}
 
 	uv.NewStyledString(
 		lipgloss.NewStyle().

@@ -488,6 +488,18 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		commands = append(commands, NewCommandItem(c.com.Styles, "disable_docker_mcp", "Disable Docker MCP Catalog", "", ActionDisableDockerMCP{}))
 	}
 
+	// Add toggle commands for each non-Docker MCP server.
+	for _, m := range cfg.MCP.Sorted() {
+		if m.Name == config.DockerMCPName {
+			continue
+		}
+		if m.MCP.Disabled {
+			commands = append(commands, NewCommandItem(c.com.Styles, "enable_mcp_"+m.Name, "Enable MCP: "+m.Name, "", ActionToggleMCP{Name: m.Name, Disable: false}))
+		} else {
+			commands = append(commands, NewCommandItem(c.com.Styles, "disable_mcp_"+m.Name, "Disable MCP: "+m.Name, "", ActionToggleMCP{Name: m.Name, Disable: true}))
+		}
+	}
+
 	if c.hasTodos || c.hasQueue {
 		var label string
 		switch {
