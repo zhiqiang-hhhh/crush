@@ -8,6 +8,13 @@ Launch a new agent that has access to the following tools: GlobTool, GrepTool, L
 - If searching for a specific class definition like "class Foo", use GlobTool directly instead
 </when_to_use>
 
+<when_not_to_use>
+- NEVER use Agent for tasks achievable in 1-2 direct tool calls (e.g., a single grep or viewing a known file)
+- When your context is clean and not overloaded — just call Grep/Glob/View yourself
+- When you only need to check one file or one pattern — the overhead of a sub-agent is pure waste
+- When you already have a clear idea of where to look — go directly, don't delegate
+</when_not_to_use>
+
 <usage_notes>
 1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
 2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.

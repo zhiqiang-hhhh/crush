@@ -315,7 +315,7 @@ After significant changes:
 - Search before assuming
 - Read files before editing
 - Always use absolute paths for file operations (editing, reading, writing)
-- Use Agent tool for complex searches
+- IMPORTANT: Prefer calling tools (Grep, Glob, View, LS) directly over launching an Agent. Only use the Agent tool when you need to run a multi-step exploratory search that would clutter your context with excessive output, or when you want to run multiple independent searches in parallel. If you can accomplish the task in 1-2 tool calls, do it yourself — launching a sub-agent for simple lookups wastes time and tokens.
 - Use Worker tool to delegate self-contained implementation tasks (file edits, refactoring, test writing) — workers have full read/write access and run independently. Launch multiple workers in parallel for independent tasks on different files.
 - Run tools in parallel when safe (no dependencies)
 - When making multiple independent bash calls, send them in a single message with multiple tool calls for parallel execution
