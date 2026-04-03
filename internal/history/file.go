@@ -94,6 +94,7 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 		if txErr != nil {
 			return File{}, fmt.Errorf("failed to begin transaction: %w", txErr)
 		}
+		defer tx.Rollback() //nolint:errcheck
 
 		// Create a new queries instance with the transaction
 		qtx := s.q.WithTx(tx)
@@ -107,9 +108,6 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 			Version:   version,
 		})
 		if txErr != nil {
-			// Rollback the transaction
-			tx.Rollback()
-
 			// Check if this is a uniqueness constraint violation
 			if strings.Contains(txErr.Error(), "UNIQUE constraint failed") {
 				if attempt < maxRetries-1 {
@@ -166,7 +164,10 @@ func (s *service) ListBySession(ctx context.Context, sessionID string) ([]File, 
 }
 
 func (s *service) ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error) {
-	dbFiles, err := s.q.ListLatestSessionFiles(ctx, sessionID)
+	dbFiles, err := s.q.ListLatestSessionFiles(ctx, db.ListLatestSessionFilesParams{
+		SessionID:   sessionID,
+		SessionID_2: sessionID,
+	})
 	if err != nil {
 		return nil, err
 	}
