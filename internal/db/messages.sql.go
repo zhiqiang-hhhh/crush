@@ -19,13 +19,12 @@ INSERT INTO messages (
     model,
     provider,
     is_summary_message,
-    is_plan_mode,
     created_at,
     updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
+    ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
 )
-RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, is_plan_mode
+RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message
 `
 
 type CreateMessageParams struct {
@@ -36,7 +35,6 @@ type CreateMessageParams struct {
 	Model            sql.NullString `json:"model"`
 	Provider         sql.NullString `json:"provider"`
 	IsSummaryMessage int64          `json:"is_summary_message"`
-	IsPlanMode       int64          `json:"is_plan_mode"`
 }
 
 func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
@@ -48,7 +46,6 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		arg.Model,
 		arg.Provider,
 		arg.IsSummaryMessage,
-		arg.IsPlanMode,
 	)
 	var i Message
 	err := row.Scan(
@@ -62,7 +59,6 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		&i.FinishedAt,
 		&i.Provider,
 		&i.IsSummaryMessage,
-		&i.IsPlanMode,
 	)
 	return i, err
 }
@@ -88,7 +84,7 @@ func (q *Queries) DeleteSessionMessages(ctx context.Context, sessionID string) e
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, is_plan_mode
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message
 FROM messages
 WHERE id = ? LIMIT 1
 `
@@ -107,13 +103,12 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 		&i.FinishedAt,
 		&i.Provider,
 		&i.IsSummaryMessage,
-		&i.IsPlanMode,
 	)
 	return i, err
 }
 
 const listAllUserMessages = `-- name: ListAllUserMessages :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, is_plan_mode
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message
 FROM messages
 WHERE role = 'user'
 ORDER BY created_at DESC
@@ -139,7 +134,6 @@ func (q *Queries) ListAllUserMessages(ctx context.Context) ([]Message, error) {
 			&i.FinishedAt,
 			&i.Provider,
 			&i.IsSummaryMessage,
-			&i.IsPlanMode,
 		); err != nil {
 			return nil, err
 		}
@@ -155,7 +149,7 @@ func (q *Queries) ListAllUserMessages(ctx context.Context) ([]Message, error) {
 }
 
 const listMessagesBySession = `-- name: ListMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, is_plan_mode
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message
 FROM messages
 WHERE session_id = ?
 ORDER BY rowid ASC
@@ -181,7 +175,101 @@ func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) (
 			&i.FinishedAt,
 			&i.Provider,
 			&i.IsSummaryMessage,
-			&i.IsPlanMode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMessagesBySessionBefore = `-- name: ListMessagesBySessionBefore :many
+SELECT m.id, m.session_id, m.role, m.parts, m.model, m.created_at, m.updated_at, m.finished_at, m.provider, m.is_summary_message
+FROM messages m
+WHERE m.session_id = ? AND m.rowid < (SELECT mm.rowid FROM messages mm WHERE mm.id = ?)
+ORDER BY m.rowid DESC
+LIMIT ?
+`
+
+type ListMessagesBySessionBeforeParams struct {
+	SessionID string `json:"session_id"`
+	ID        string `json:"id"`
+	Limit     int64  `json:"limit"`
+}
+
+func (q *Queries) ListMessagesBySessionBefore(ctx context.Context, arg ListMessagesBySessionBeforeParams) ([]Message, error) {
+	rows, err := q.query(ctx, q.listMessagesBySessionBeforeStmt, listMessagesBySessionBefore, arg.SessionID, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentMessagesBySession = `-- name: ListRecentMessagesBySession :many
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message
+FROM messages
+WHERE session_id = ?
+ORDER BY rowid DESC
+LIMIT ?
+`
+
+type ListRecentMessagesBySessionParams struct {
+	SessionID string `json:"session_id"`
+	Limit     int64  `json:"limit"`
+}
+
+func (q *Queries) ListRecentMessagesBySession(ctx context.Context, arg ListRecentMessagesBySessionParams) ([]Message, error) {
+	rows, err := q.query(ctx, q.listRecentMessagesBySessionStmt, listRecentMessagesBySession, arg.SessionID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
 		); err != nil {
 			return nil, err
 		}
@@ -294,7 +382,7 @@ func (q *Queries) ListRecentMessagesBySession(ctx context.Context, arg ListRecen
 }
 
 const listUserMessagesBySession = `-- name: ListUserMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, is_plan_mode
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message
 FROM messages
 WHERE session_id = ? AND role = 'user'
 ORDER BY created_at DESC
@@ -320,7 +408,6 @@ func (q *Queries) ListUserMessagesBySession(ctx context.Context, sessionID strin
 			&i.FinishedAt,
 			&i.Provider,
 			&i.IsSummaryMessage,
-			&i.IsPlanMode,
 		); err != nil {
 			return nil, err
 		}

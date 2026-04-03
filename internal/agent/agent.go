@@ -12,7 +12,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -121,8 +120,6 @@ type SessionAgent interface {
 	Model() Model
 	SmallModel() Model
 	SummaryModel() Model
-	SetPlanMode(sessionID string, active bool)
-	IsPlanMode(sessionID string) bool
 }
 
 type Model struct {
@@ -154,7 +151,6 @@ type sessionAgent struct {
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, context.CancelFunc]
 	circuitBreaker *summarizeCircuitBreaker
-	planMode       *csync.Map[string, bool]
 }
 
 type SessionAgentOptions struct {
@@ -199,7 +195,6 @@ func NewSessionAgent(
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, context.CancelFunc](),
 		circuitBreaker:       newSummarizeCircuitBreaker(),
-		planMode:            csync.NewMap[string, bool](),
 	}
 }
 
@@ -353,12 +348,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 
 	var currentAssistant *message.Message
 	var shouldSummarize bool
-	var clearContextAfterStep bool
 	sw := newStreamingWriter(a.messages)
-	if _, exists := a.planMode.Get(call.SessionID); !exists {
-		a.planMode.Set(call.SessionID, detectPlanMode(msgs))
-	}
-	planModeActive, _ := a.planMode.Get(call.SessionID)
 	result, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:            message.PromptWithTextAttachments(call.Prompt, call.Attachments),
 		Files:             files,
@@ -379,23 +369,6 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 
 			// Use latest tools (updated by SetTools when MCP tools change).
 			prepared.Tools = a.tools.Copy()
-
-			// In plan mode, restrict to read-only tools only.
-			// Filter both ActiveTools (LLM visibility) and Tools
-			// (execution) to prevent write tools from running.
-			// Also inject a system message reinforcing the restriction.
-			// Re-read from the map each step so UI toggles take effect
-			// immediately, even mid-run.
-			planModeActive, _ = a.planMode.Get(call.SessionID)
-			if planModeActive {
-				prepared.ActiveTools = planModeReadOnlyTools
-				prepared.Tools = slices.DeleteFunc(prepared.Tools, func(t fantasy.AgentTool) bool {
-					return !slices.Contains(planModeReadOnlyTools, t.Info().Name)
-				})
-				prepared.Messages = append([]fantasy.Message{
-					fantasy.NewSystemMessage(planModeSystemPrompt),
-				}, prepared.Messages...)
-			}
 
 			queuedCalls, _ := a.messageQueue.Take(call.SessionID)
 			for _, queued := range queuedCalls {
@@ -461,8 +434,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				Parts:      []message.ContentPart{},
 				Model:      largeModel.ModelCfg.Model,
 				Provider:   largeModel.ModelCfg.Provider,
-				IsPlanMode: planModeActive,
-			})
+				})
 			if err != nil {
 				return callContext, prepared, err
 			}
@@ -547,19 +519,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			return a.messages.Update(ctx, *currentAssistant)
 		},
 		OnToolResult: func(result fantasy.ToolResultContent) error {
-			if active, clearCtx, ok := updatePlanModeFromResult(result); ok {
-				planModeActive = active
-				a.planMode.Set(call.SessionID, active)
-				if clearCtx {
-					clearContextAfterStep = true
-				}
-			}
 			toolResult := a.convertToToolResult(result)
 			// Use parent ctx instead of genCtx to ensure the message is created
 			// even if the request is canceled mid-stream
 			_, createMsgErr := a.messages.Create(ctx, currentAssistant.SessionID, message.CreateMessageParams{
-				Role:       message.Tool,
-				IsPlanMode: planModeActive,
+				Role: message.Tool,
 				Parts: []message.ContentPart{
 					toolResult,
 				},
@@ -790,19 +754,6 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	// Release active request.
 	a.activeRequests.Del(call.SessionID)
 	cancel()
-
-	if clearContextAfterStep {
-		if delErr := a.messages.DeleteSessionMessages(ctx, call.SessionID); delErr != nil {
-			slog.Error("Failed to delete session messages for context clear", "error", delErr, "session", call.SessionID)
-		}
-		if sess, getErr := a.sessions.Get(ctx, call.SessionID); getErr == nil {
-			sess.PromptTokens = 0
-			sess.CompletionTokens = 0
-			if _, saveErr := a.sessions.Save(ctx, sess); saveErr != nil {
-				slog.Error("Failed to reset session tokens after context clear", "error", saveErr, "session", call.SessionID)
-			}
-		}
-	}
 
 	// Drain the queue: if there are queued messages, process the next one.
 	// This ensures queued user messages are not stranded after a run completes.
@@ -1036,7 +987,6 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	msg, err := a.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
 		Role:       message.User,
 		Parts:      parts,
-		IsPlanMode: a.IsPlanMode(call.SessionID),
 	})
 	if err != nil {
 		return message.Message{}, fmt.Errorf("failed to create user message: %w", err)
@@ -1476,15 +1426,6 @@ func (a *sessionAgent) IsSessionBusy(sessionID string) bool {
 	return busy
 }
 
-func (a *sessionAgent) SetPlanMode(sessionID string, active bool) {
-	a.planMode.Set(sessionID, active)
-}
-
-func (a *sessionAgent) IsPlanMode(sessionID string) bool {
-	v, _ := a.planMode.Get(sessionID)
-	return v
-}
-
 func (a *sessionAgent) QueuedPrompts(sessionID string) int {
 	l, ok := a.messageQueue.Get(sessionID)
 	if !ok {
@@ -1572,67 +1513,6 @@ func (a *sessionAgent) convertToToolResult(result fantasy.ToolResultContent) mes
 	}
 
 	return baseResult
-}
-
-// planModeSystemPrompt is injected as a system message every turn while plan
-// mode is active, reinforcing the read-only restriction.
-const planModeSystemPrompt = `Plan mode is active. You MUST NOT make any edits, run any non-readonly tools (including edit, multiedit, write, download), or otherwise make any changes to the system. This supersedes any other instructions you have received.
-
-Focus on:
-1. Exploring the codebase with read-only tools to understand the problem
-2. Designing a concrete implementation plan with specific files, changes, and verification steps
-3. Using ask_user if you need to clarify the approach with the user
-4. When ready, call plan_mode with mode="implement" and include your complete plan in the plan parameter
-
-Your plan will be shown to the user for approval before you can begin implementation.`
-
-// planModeReadOnlyTools is the set of tools allowed during plan mode.
-var planModeReadOnlyTools = []string{
-	"view", "glob", "grep", "ls", "diff", "fetch", "agentic_fetch",
-	"web_search", "sourcegraph", "agent", "memory_search",
-	"list_mcp_resources", "read_mcp_resource",
-	"lsp_diagnostics", "lsp_references",
-	"ask_user", "todos", "job_output",
-	"bash", "job_kill", "web_fetch",
-	tools.PlanModeToolName,
-}
-
-// detectPlanMode scans existing session messages to determine if plan mode
-// is currently active. It first looks for an explicit plan_mode tool result
-// (most authoritative). If none is found, it falls back to the IsPlanMode
-// field on the most recent message, which reflects UI-toggled plan mode
-// changes that don't produce tool results.
-func detectPlanMode(msgs []message.Message) bool {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		for _, tr := range msgs[i].ToolResults() {
-			if tr.Name != tools.PlanModeToolName || tr.Metadata == "" {
-				continue
-			}
-			var meta tools.PlanModeResponseMetadata
-			if err := json.Unmarshal([]byte(tr.Metadata), &meta); err != nil {
-				continue
-			}
-			return meta.PlanActive
-		}
-	}
-	if len(msgs) > 0 {
-		return msgs[len(msgs)-1].IsPlanMode
-	}
-	return false
-}
-
-// updatePlanModeFromResult checks if a tool result is from the plan_mode tool
-// and returns the new plan mode state. The second return value indicates
-// whether the state was updated.
-func updatePlanModeFromResult(result fantasy.ToolResultContent) (active bool, clearContext bool, ok bool) {
-	if result.ToolName != tools.PlanModeToolName || result.ClientMetadata == "" {
-		return false, false, false
-	}
-	var meta tools.PlanModeResponseMetadata
-	if err := json.Unmarshal([]byte(result.ClientMetadata), &meta); err != nil {
-		return false, false, false
-	}
-	return meta.PlanActive, meta.ClearContext, true
 }
 
 // workaroundProviderMediaLimitations converts media content in tool results to

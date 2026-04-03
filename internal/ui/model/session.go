@@ -2,7 +2,6 @@ package model
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/diff"
 	"github.com/charmbracelet/crush/internal/fsext"
@@ -49,7 +47,6 @@ type loadSessionMsg struct {
 	remainingItems  []chat.MessageItem // items from the page that weren't rendered (above the turn window)
 	cursor          message.MessageCursor
 	hasMore         bool
-	planMode        bool
 	lastUserMsgTime int64
 }
 
@@ -108,7 +105,7 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 			slog.Error("Failed to load read files for session", "error", err)
 		}
 
-		items, cursor, hasMore, planMode, lastUserMsgTime := m.prepareSessionMessages(ctx, sessionID)
+		items, cursor, hasMore, lastUserMsgTime := m.prepareSessionMessages(ctx, sessionID)
 
 		// Compute the turn window: show only the last turnWindowInit turns.
 		turnStart := turnStartIndex(items, turnWindowInit)
@@ -126,7 +123,6 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 			messageItems:    windowedItems,
 			cursor:          cursor,
 			hasMore:         hasMore || turnStart > 0,
-			planMode:        planMode,
 			lastUserMsgTime: lastUserMsgTime,
 			remainingItems:  items[:turnStart],
 		}
@@ -135,42 +131,14 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 
 // prepareSessionMessages loads the most recent page of messages for a session
 // off the UI thread. It returns the constructed message items, pagination info,
-// plan mode state, and the last user message timestamp.
-func (m *UI) prepareSessionMessages(ctx context.Context, sessionID string) ([]chat.MessageItem, message.MessageCursor, bool, bool, int64) {
+// and the last user message timestamp.
+func (m *UI) prepareSessionMessages(ctx context.Context, sessionID string) ([]chat.MessageItem, message.MessageCursor, bool, int64) {
 	page, err := m.com.App.Messages.ListRecent(ctx, sessionID, messagePageSize)
 	if err != nil {
 		slog.Error("Failed to load session messages", "error", err)
-		return nil, message.MessageCursor{}, false, false, 0
+		return nil, message.MessageCursor{}, false, 0
 	}
 	msgs := page.Messages
-
-	// Restore plan mode state. Prefer an explicit plan_mode tool result
-	// (most authoritative). If none is found, fall back to the IsPlanMode
-	// field on the most recent message, which captures UI-toggled changes
-	// that don't generate tool results.
-	var planMode bool
-	foundToolResult := false
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != message.Tool {
-			continue
-		}
-		for _, tr := range msgs[i].ToolResults() {
-			if tr.Name == agenttools.PlanModeToolName && tr.Metadata != "" {
-				var meta agenttools.PlanModeResponseMetadata
-				if err := json.Unmarshal([]byte(tr.Metadata), &meta); err == nil {
-					planMode = meta.PlanActive
-				}
-				foundToolResult = true
-				break
-			}
-		}
-		if foundToolResult {
-			break
-		}
-	}
-	if !foundToolResult && len(msgs) > 0 {
-		planMode = msgs[len(msgs)-1].IsPlanMode
-	}
 
 	// Repair any assistant messages that were persisted without a Finish
 	// part (e.g. due to a crash or provider error mid-stream) so the UI
@@ -212,7 +180,7 @@ func (m *UI) prepareSessionMessages(ctx context.Context, sessionID string) ([]ch
 	// Load nested tool calls.
 	m.loadNestedToolCalls(items)
 
-	return items, page.Cursor, page.HasMore, planMode, lastUserMsgTime
+	return items, page.Cursor, page.HasMore, lastUserMsgTime
 }
 
 // turnStartIndex scans items backwards and returns the index where the last
@@ -297,7 +265,7 @@ func (m *UI) loadMoreHistory() tea.Cmd {
 }
 
 // buildMessageItems converts a slice of messages into chat items. It does NOT
-// handle plan-mode detection or nested tool calls — those are done once during
+// handle nested tool calls — those are done once during
 // initial load only.
 func buildMessageItems(styles *styles.Styles, cfg *config.Config, msgs []message.Message) []chat.MessageItem {
 	for i := range msgs {

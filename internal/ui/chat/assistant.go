@@ -59,9 +59,6 @@ func NewAssistantMessageItem(sty *styles.Styles, message *message.Message) Messa
 		LabelColor:  sty.FgBase,
 		CycleColors: true,
 	})
-	if message.IsPlanMode {
-		a.anim.SetSpinnerColor(sty.Info)
-	}
 	return a
 }
 
@@ -258,11 +255,6 @@ func (a *AssistantMessageItem) SetMessage(message *message.Message) tea.Cmd {
 	wasSpinning := a.isSpinning()
 	a.message = message
 	a.clearCache()
-	if message.IsPlanMode {
-		a.anim.SetSpinnerColor(a.sty.Info)
-	} else {
-		a.anim.SetSpinnerColor(nil)
-	}
 	if !wasSpinning && a.isSpinning() {
 		return a.StartAnimation()
 	}

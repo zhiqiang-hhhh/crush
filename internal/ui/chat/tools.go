@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/tree"
 	"github.com/charmbracelet/crush/internal/agent"
@@ -32,6 +33,8 @@ const maxCollapsedNestedTools = 3
 
 // toolBodyLeftPaddingTotal represents the padding that should be applied to each tool body
 const toolBodyLeftPaddingTotal = 2
+
+const diffTruncateFormat = "… (%d lines hidden) [click to preview]"
 
 // ToolStatus represents the current state of a tool call.
 type ToolStatus int
@@ -224,7 +227,6 @@ func NewToolMessageItem(
 	toolCall message.ToolCall,
 	result *message.ToolResult,
 	canceled bool,
-	planMode bool,
 ) ToolMessageItem {
 	var item ToolMessageItem
 	switch toolCall.Name {
@@ -272,8 +274,6 @@ func NewToolMessageItem(
 		item = NewReferencesToolMessageItem(sty, toolCall, result, canceled)
 	case tools.LSPRestartToolName:
 		item = NewLSPRestartToolMessageItem(sty, toolCall, result, canceled)
-	case tools.PlanModeToolName:
-		item = NewPlanModeToolMessageItem(sty, toolCall, result, canceled)
 	default:
 		if IsDockerMCPTool(toolCall.Name) {
 			item = NewDockerMCPToolMessageItem(sty, toolCall, result, canceled)
@@ -284,19 +284,7 @@ func NewToolMessageItem(
 		}
 	}
 	item.SetMessageID(messageID)
-	if planMode {
-		if base, ok := item.(interface{ SetPlanMode(bool) }); ok {
-			base.SetPlanMode(true)
-		}
-	}
 	return item
-}
-
-// SetPlanMode updates the spinner color for plan mode.
-func (t *baseToolMessageItem) SetPlanMode(planMode bool) {
-	if planMode {
-		t.anim.SetSpinnerColor(t.sty.Info)
-	}
 }
 
 // SetCompact implements the Compactable interface.
@@ -792,7 +780,7 @@ func toolOutputDiffContent(sty *styles.Styles, file, oldContent, newContent stri
 	if len(lines) > maxLines && !expanded {
 		truncMsg := sty.Tool.DiffTruncation.
 			Width(bodyWidth).
-			Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-maxLines))
+			Render(fmt.Sprintf(diffTruncateFormat, len(lines)-maxLines))
 		formatted = strings.Join(lines[:maxLines], "\n") + "\n" + truncMsg
 	}
 
@@ -842,7 +830,7 @@ func toolOutputMultiEditDiffContent(sty *styles.Styles, file string, meta tools.
 	if len(lines) > maxLines && !expanded {
 		truncMsg := sty.Tool.DiffTruncation.
 			Width(bodyWidth).
-			Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-maxLines))
+			Render(fmt.Sprintf(diffTruncateFormat, len(lines)-maxLines))
 		formatted = truncMsg + "\n" + strings.Join(lines[:maxLines], "\n")
 	}
 
@@ -875,6 +863,16 @@ func roundedEnumerator(lPadding, width int) tree.Enumerator {
 	}
 }
 
+// cachedPlainRenderer reuses a glamour.TermRenderer across calls to
+// toolOutputMarkdownContent. Since bubbletea's Update/View runs on a single
+// goroutine, a simple (sty, width)-keyed variable is safe and avoids the
+// expensive glamour.NewTermRenderer allocation on every render.
+var (
+	cachedPlainRendererSty   *styles.Styles
+	cachedPlainRendererWidth int
+	cachedPlainRenderer      *glamour.TermRenderer
+)
+
 // toolOutputMarkdownContent renders markdown content with optional truncation.
 func toolOutputMarkdownContent(sty *styles.Styles, content string, width int, expanded bool) string {
 	content = stringext.NormalizeSpace(content)
@@ -884,8 +882,12 @@ func toolOutputMarkdownContent(sty *styles.Styles, content string, width int, ex
 		width = maxTextWidth
 	}
 
-	renderer := common.PlainMarkdownRenderer(sty, width)
-	rendered, err := renderer.Render(content)
+	if cachedPlainRenderer == nil || cachedPlainRendererWidth != width || cachedPlainRendererSty != sty {
+		cachedPlainRenderer = common.PlainMarkdownRenderer(sty, width)
+		cachedPlainRendererWidth = width
+		cachedPlainRendererSty = sty
+	}
+	rendered, err := cachedPlainRenderer.Render(content)
 	if err != nil {
 		return toolOutputPlainContent(sty, content, width, expanded)
 	}

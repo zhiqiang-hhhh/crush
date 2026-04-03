@@ -229,10 +229,6 @@ type Styles struct {
 			UserFocused      lipgloss.Style
 			AssistantBlurred lipgloss.Style
 			AssistantFocused lipgloss.Style
-			PlanModeBlurred      lipgloss.Style
-			PlanModeFocused      lipgloss.Style
-			PlanModeUserBlurred  lipgloss.Style
-			PlanModeUserFocused  lipgloss.Style
 			NoContent        lipgloss.Style
 			Thinking         lipgloss.Style
 			ErrorTag         lipgloss.Style
@@ -1266,14 +1262,6 @@ func DefaultStyles() Styles {
 	s.Chat.Message.AssistantBlurred = s.Chat.Message.NoContent.PaddingLeft(2)
 	s.Chat.Message.AssistantFocused = s.Chat.Message.NoContent.PaddingLeft(1).BorderLeft(true).
 		BorderForeground(greenDark).BorderStyle(messageFocussedBorder)
-	s.Chat.Message.PlanModeBlurred = s.Chat.Message.NoContent.PaddingLeft(1).BorderLeft(true).
-		BorderForeground(info).BorderStyle(normalBorder)
-	s.Chat.Message.PlanModeFocused = s.Chat.Message.NoContent.PaddingLeft(1).BorderLeft(true).
-		BorderForeground(info).BorderStyle(messageFocussedBorder)
-	s.Chat.Message.PlanModeUserBlurred = s.Chat.Message.NoContent.PaddingLeft(1).BorderLeft(true).
-		BorderForeground(info).BorderStyle(normalBorder)
-	s.Chat.Message.PlanModeUserFocused = s.Chat.Message.NoContent.PaddingLeft(1).BorderLeft(true).
-		BorderForeground(info).BorderStyle(messageFocussedBorder)
 	s.Chat.Message.Thinking = lipgloss.NewStyle().MaxHeight(10)
 	s.Chat.Message.ErrorTag = lipgloss.NewStyle().Padding(0, 1).
 		Background(red).Foreground(white)

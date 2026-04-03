@@ -506,7 +506,6 @@ func allToolNames() []string {
 		"glob",
 		"grep",
 		"ls",
-		"plan_mode",
 		"sourcegraph",
 		"todos",
 		"view",

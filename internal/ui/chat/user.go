@@ -75,18 +75,10 @@ func (m *UserMessageItem) RawRender(width int) string {
 // Render implements MessageItem.
 func (m *UserMessageItem) Render(width int) string {
 	var prefix string
-	if m.message.IsPlanMode {
-		if m.focused {
-			prefix = m.sty.Chat.Message.PlanModeUserFocused.Render()
-		} else {
-			prefix = m.sty.Chat.Message.PlanModeUserBlurred.Render()
-		}
+	if m.focused {
+		prefix = m.sty.Chat.Message.UserFocused.Render()
 	} else {
-		if m.focused {
-			prefix = m.sty.Chat.Message.UserFocused.Render()
-		} else {
-			prefix = m.sty.Chat.Message.UserBlurred.Render()
-		}
+		prefix = m.sty.Chat.Message.UserBlurred.Render()
 	}
 	lines := strings.Split(m.RawRender(width), "\n")
 	for i, line := range lines {

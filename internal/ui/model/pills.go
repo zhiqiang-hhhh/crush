@@ -52,12 +52,6 @@ func hasInProgressTodo(todos []session.Todo) bool {
 	return false
 }
 
-// planModePill renders the plan mode indicator pill.
-func planModePill(t *styles.Styles) string {
-	label := t.Base.Render("Plan Mode")
-	return t.Pills.Focused.Render(label)
-}
-
 // queuePill renders the queue count pill with gradient triangles.
 func queuePill(queue int, focused, panelFocused bool, t *styles.Styles) string {
 	if queue <= 0 {
@@ -146,7 +140,7 @@ func (m *UI) togglePillsExpanded() tea.Cmd {
 	if !m.hasSession() {
 		return nil
 	}
-	hasPills := hasIncompleteTodos(m.session.Todos) || m.promptQueue > 0 || m.planMode
+	hasPills := hasIncompleteTodos(m.session.Todos) || m.promptQueue > 0
 	if !hasPills {
 		return nil
 	}
@@ -196,7 +190,7 @@ func (m *UI) pillsAreaHeight() int {
 		hasIncomplete = hasIncompleteTodos(m.session.Todos)
 	}
 	hasQueue := m.promptQueue > 0
-	hasPills := hasIncomplete || hasQueue || m.planMode
+	hasPills := hasIncomplete || hasQueue
 	if !hasPills {
 		return 0
 	}
@@ -233,7 +227,7 @@ func (m *UI) renderPills() {
 	}
 	hasQueue := m.promptQueue > 0
 
-	if !hasIncomplete && !hasQueue && !m.planMode {
+	if !hasIncomplete && !hasQueue {
 		return
 	}
 
@@ -247,15 +241,6 @@ func (m *UI) renderPills() {
 	}
 
 	var pills []string
-	if m.planMode {
-		planPill := planModePill(t)
-		planHint := lipgloss.JoinHorizontal(lipgloss.Center,
-			planPill, " ",
-			t.Pills.HelpKey.Render("tab"), " ",
-			t.Pills.HelpText.Render("exit"),
-		)
-		pills = append(pills, planHint)
-	}
 	if hasIncomplete {
 		pills = append(pills, todoPill(m.session.Todos, inProgressIcon, todosFocused, m.pillsExpanded, t))
 	}

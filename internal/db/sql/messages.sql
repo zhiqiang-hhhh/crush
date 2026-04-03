@@ -18,11 +18,10 @@ INSERT INTO messages (
     model,
     provider,
     is_summary_message,
-    is_plan_mode,
     created_at,
     updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
+    ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
 )
 RETURNING *;
 

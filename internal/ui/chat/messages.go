@@ -321,7 +321,6 @@ func ExtractMessageItems(sty *styles.Styles, msg *message.Message, toolResults m
 				tc,
 				result,
 				msg.FinishReason() == message.FinishReasonCanceled || (result == nil && msg.IsFinished()),
-				msg.IsPlanMode,
 			))
 		}
 		return items

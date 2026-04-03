@@ -135,7 +135,6 @@ type Message struct {
 	CreatedAt        int64
 	UpdatedAt        int64
 	IsSummaryMessage bool
-	IsPlanMode       bool
 }
 
 func (m *Message) Content() TextContent {

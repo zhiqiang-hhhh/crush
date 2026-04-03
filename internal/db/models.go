@@ -29,7 +29,6 @@ type Message struct {
 	FinishedAt       sql.NullInt64  `json:"finished_at"`
 	Provider         sql.NullString `json:"provider"`
 	IsSummaryMessage int64          `json:"is_summary_message"`
-	IsPlanMode       int64          `json:"is_plan_mode"`
 }
 
 type ReadFile struct {

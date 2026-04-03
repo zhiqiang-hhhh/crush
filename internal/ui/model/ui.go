@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -276,7 +275,6 @@ type UI struct {
 	focusedPillSection pillSection
 	promptQueue        int
 	pillsView          string
-	planMode           bool
 
 	// landingEditorRect is the dynamically computed editor rect when in
 	// landing state, used for cursor positioning without mutating the layout.
@@ -560,10 +558,6 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionFiles = msg.files
 		cmds = append(cmds, m.startLSPs(msg.lspFilePaths()))
 
-		m.planMode = msg.planMode || m.planMode
-		if m.hasSession() {
-			m.com.App.AgentCoordinator.SetPlanMode(m.session.ID, m.planMode)
-		}
 		m.lastUserMessageTime = msg.lastUserMsgTime
 		m.renderPills()
 
@@ -1169,7 +1163,6 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 		}
 	case message.Tool:
 		for _, tr := range msg.ToolResults() {
-			m.updatePlanMode(tr)
 			toolItem := m.chat.MessageItem(tr.ToolCallID)
 			if toolItem == nil {
 				m.pendingToolResults[tr.ToolCallID] = &tr
@@ -1245,7 +1238,7 @@ func (m *UI) updateSessionMessage(msg message.Message) tea.Cmd {
 		if existingToolItem == nil {
 			pendingResult := m.pendingToolResults[tc.ID]
 			delete(m.pendingToolResults, tc.ID)
-			items = append(items, chat.NewToolMessageItem(m.com.Styles, msg.ID, tc, pendingResult, false, msg.IsPlanMode))
+			items = append(items, chat.NewToolMessageItem(m.com.Styles, msg.ID, tc, pendingResult, false))
 		}
 	}
 
@@ -1311,53 +1304,58 @@ func (m *UI) handleChildSessionMessage(event pubsub.Event[message.Message]) tea.
 		return nil
 	}
 
-	// Get existing nested tools.
-	nestedTools := agentItem.NestedTools()
-
 	// Update streaming text from the sub-agent's assistant message.
 	if hasContent {
 		agentItem.SetStreamingText(event.Payload.Content().Text)
 	}
 
-	// Build an index from tool call ID to slice position for O(1) lookups.
-	toolIndex := make(map[string]int, len(nestedTools))
-	for i, nt := range nestedTools {
-		toolIndex[nt.ToolCall().ID] = i
-	}
+	// Fast path: when only the streaming text changed (no new tool calls
+	// or results), skip the expensive nested-tool rebuild and height
+	// invalidation. This dramatically reduces CPU during fast token
+	// streaming from sub-agents.
+	if hasToolCalls || hasToolResults {
+		nestedTools := agentItem.NestedTools()
 
-	// Update or create nested tool calls.
-	for _, tc := range event.Payload.ToolCalls() {
-		if idx, ok := toolIndex[tc.ID]; ok {
-			nestedTools[idx].SetToolCall(tc)
-		} else {
-			// Create a new nested tool item.
-			nestedItem := chat.NewToolMessageItem(m.com.Styles, event.Payload.ID, tc, nil, false, m.planMode)
-			if simplifiable, ok := nestedItem.(chat.Compactable); ok {
-				simplifiable.SetCompact(true)
-			}
-			if animatable, ok := nestedItem.(chat.Animatable); ok {
-				if cmd := animatable.StartAnimation(); cmd != nil {
-					cmds = append(cmds, cmd)
+		// Build an index from tool call ID to slice position for O(1) lookups.
+		toolIndex := make(map[string]int, len(nestedTools))
+		for i, nt := range nestedTools {
+			toolIndex[nt.ToolCall().ID] = i
+		}
+
+		// Update or create nested tool calls.
+		for _, tc := range event.Payload.ToolCalls() {
+			if idx, ok := toolIndex[tc.ID]; ok {
+				nestedTools[idx].SetToolCall(tc)
+			} else {
+				// Create a new nested tool item.
+				nestedItem := chat.NewToolMessageItem(m.com.Styles, event.Payload.ID, tc, nil, false)
+				if simplifiable, ok := nestedItem.(chat.Compactable); ok {
+					simplifiable.SetCompact(true)
 				}
+				if animatable, ok := nestedItem.(chat.Animatable); ok {
+					if cmd := animatable.StartAnimation(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				}
+				toolIndex[tc.ID] = len(nestedTools)
+				nestedTools = append(nestedTools, nestedItem)
 			}
-			toolIndex[tc.ID] = len(nestedTools)
-			nestedTools = append(nestedTools, nestedItem)
 		}
-	}
 
-	// Update nested tool results.
-	for _, tr := range event.Payload.ToolResults() {
-		if idx, ok := toolIndex[tr.ToolCallID]; ok {
-			nestedTools[idx].SetResult(&tr)
+		// Update nested tool results.
+		for _, tr := range event.Payload.ToolResults() {
+			if idx, ok := toolIndex[tr.ToolCallID]; ok {
+				nestedTools[idx].SetResult(&tr)
+			}
 		}
+
+		// Update the agent item with the new nested tools.
+		agentItem.SetNestedTools(nestedTools)
+		m.chat.InvalidateItemHeight(toolCallID)
+
+		// Update the chat so it updates the index map for animations to work as expected
+		m.chat.UpdateNestedToolIDs(toolCallID)
 	}
-
-	// Update the agent item with the new nested tools.
-	agentItem.SetNestedTools(nestedTools)
-	m.chat.InvalidateItemHeight(toolCallID)
-
-	// Update the chat so it updates the index map for animations to work as expected
-	m.chat.UpdateNestedToolIDs(toolCallID)
 
 	if m.chat.Follow() {
 		if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
@@ -1408,7 +1406,6 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	// Session dialog messages.
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
-		m.planMode = false
 		cmds = append(cmds, m.loadSession(msg.Session.ID))
 
 	// Open dialog message.
@@ -1423,12 +1420,6 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		yolo := !m.com.App.Permissions.SkipRequests()
 		m.com.App.Permissions.SetSkipRequests(yolo)
 		m.setEditorPrompt(yolo)
-		m.dialog.CloseDialog(dialog.CommandsID)
-	case dialog.ActionTogglePlanMode:
-		if m.isAgentBusy() {
-			return util.ReportWarn("Agent is working, please wait...")
-		}
-		m.togglePlanMode()
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionToggleNotifications:
 		cfg := m.com.Config()
@@ -1935,12 +1926,6 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				if cmd := m.newSession(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
-			case key.Matches(msg, m.keyMap.Tab):
-				if m.isAgentBusy() {
-					cmds = append(cmds, util.ReportWarn("Agent is working, please wait..."))
-					break
-				}
-				m.togglePlanMode()
 			case msg.Keystroke() == "alt+shift+e":
 				if m.isAgentBusy() {
 					cmds = append(cmds, util.ReportWarn("Agent is working, please wait..."))
@@ -3228,10 +3213,6 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 		m.setState(uiChat, m.focus)
 	}
 
-	if m.hasSession() {
-		m.com.App.AgentCoordinator.SetPlanMode(m.session.ID, m.planMode)
-	}
-
 	ctx := context.Background()
 	fileReads := slices.Clone(m.sessionFileReads)
 	sessionID := m.session.ID
@@ -3545,7 +3526,6 @@ func (m *UI) newSession() tea.Cmd {
 	m.textarea.Focus()
 	m.chat.Blur()
 	m.chat.ClearMessages()
-	m.planMode = false
 	m.pillsExpanded = false
 	m.promptQueue = 0
 	m.pillsView = ""
@@ -3957,40 +3937,6 @@ func (m *UI) copyChatHighlight() tea.Cmd {
 	)
 }
 
-// updatePlanMode checks if a tool result is from the plan_mode tool and
-// updates the plan mode state accordingly.
-func (m *UI) updatePlanMode(tr message.ToolResult) {
-	if tr.Name != agenttools.PlanModeToolName || tr.Metadata == "" {
-		return
-	}
-	var meta agenttools.PlanModeResponseMetadata
-	if err := json.Unmarshal([]byte(tr.Metadata), &meta); err != nil {
-		return
-	}
-	m.planMode = meta.PlanActive
-	if m.hasSession() {
-		m.com.App.AgentCoordinator.SetPlanMode(m.session.ID, meta.PlanActive)
-	}
-	m.renderPills()
-
-	if meta.ClearContext {
-		m.chat.ClearMessages()
-	}
-}
-
-// togglePlanMode toggles plan mode on/off from the UI. It updates the
-// coordinator's per-session plan mode state so the agent's PrepareStep
-// picks up the change on the next step.
-func (m *UI) togglePlanMode() {
-	m.planMode = !m.planMode
-	m.renderPills()
-
-	if !m.hasSession() {
-		return
-	}
-
-	m.com.App.AgentCoordinator.SetPlanMode(m.session.ID, m.planMode)
-}
 
 func (m *UI) enableDockerMCP() tea.Msg {
 	store := m.com.Store()
