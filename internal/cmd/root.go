@@ -241,6 +241,7 @@ func setupApp(cmd *cobra.Command) (*app.App, error) {
 
 	appInstance, err := app.New(ctx, conn, store)
 	if err != nil {
+		conn.Close()
 		slog.Error("Failed to create app instance", "error", err)
 		return nil, err
 	}
