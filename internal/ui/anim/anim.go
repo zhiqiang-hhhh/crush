@@ -38,7 +38,10 @@ func nextID() int {
 }
 
 // StepMsg is a message type used to trigger the next step in the animation.
-type StepMsg struct{ ID string }
+type StepMsg struct {
+	ID  string
+	Tag int64
+}
 
 // Settings defines settings for the animation.
 type Settings struct {
@@ -62,6 +65,7 @@ type Anim struct {
 	step           atomic.Int64
 	ellipsisStep   atomic.Int64
 	id             string
+	tag            atomic.Int64
 }
 
 // New creates a new Anim instance.
@@ -151,14 +155,16 @@ func (a *Anim) Width() (w int) {
 	return w
 }
 
-// Start starts the animation.
+// Start starts the animation. It invalidates any previously running tick
+// chain by incrementing the tag, ensuring only the latest chain is active.
 func (a *Anim) Start() tea.Cmd {
-	return a.Step()
+	a.tag.Add(1)
+	return a.step_()
 }
 
 // Animate advances the animation to the next step.
 func (a *Anim) Animate(msg StepMsg) tea.Cmd {
-	if msg.ID != a.id {
+	if msg.ID != a.id || msg.Tag != a.tag.Load() {
 		return nil
 	}
 
@@ -174,7 +180,7 @@ func (a *Anim) Animate(msg StepMsg) tea.Cmd {
 		}
 	}
 
-	return a.Step()
+	return a.step_()
 }
 
 // Render renders the current state of the animation.
@@ -207,10 +213,11 @@ func (a *Anim) Render() string {
 	return b.String()
 }
 
-// Step is a command that triggers the next step in the animation.
-func (a *Anim) Step() tea.Cmd {
+// step_ is a command that triggers the next step in the animation.
+func (a *Anim) step_() tea.Cmd {
+	tag := a.tag.Load()
 	return tea.Tick(time.Second/time.Duration(fps), func(t time.Time) tea.Msg {
-		return StepMsg{ID: a.id}
+		return StepMsg{ID: a.id, Tag: tag}
 	})
 }
 

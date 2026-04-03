@@ -432,21 +432,6 @@ func (a *AskUser) renderBody(width int) string {
 	return strings.TrimSuffix(result, "\n")
 }
 
-// contentHeightAboveInput returns the number of lines rendered above the text
-// input in the dialog, including the custom title and separator.
-func (a *AskUser) contentHeightAboveInput(innerWidth int) int {
-	const titleAndSeparatorHeight = 2
-	questionStyle := lipgloss.NewStyle().
-		Width(innerWidth).
-		PaddingBottom(1)
-	question := questionStyle.Render(a.request.Question)
-	h := titleAndSeparatorHeight + lipgloss.Height(question)
-	if a.request.Body != "" {
-		h += a.vp.Height() + 1
-	}
-	return h
-}
-
 // Draw implements [Dialog].
 func (a *AskUser) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := a.com.Styles
@@ -555,7 +540,7 @@ func (a *AskUser) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 			optParts = append(optParts, line)
 		}
-		interactiveParts = append(interactiveParts, strings.Join(optParts, "\n"))
+		interactiveParts = append(interactiveParts, strings.Join(optParts, "\n\n"))
 
 		if a.request.AllowText {
 			hintStyle := lipgloss.NewStyle().
@@ -639,7 +624,8 @@ func (a *AskUser) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 		cur := a.Cursor()
 		if cur != nil {
-			cur.Y += a.contentHeightAboveInput(innerWidth)
+			// header + question + bodyView + empty separator line
+			cur.Y += headerHeight + questionHeight + lipgloss.Height(bodyView) + 1
 		}
 		DrawCenterCursor(scr, area, view, cur)
 		return cur
@@ -677,7 +663,7 @@ func (a *AskUser) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	view := dialogStyle.Render(innerContent)
 	cur := a.Cursor()
 	if cur != nil {
-		cur.Y += a.contentHeightAboveInput(innerWidth)
+		cur.Y += headerHeight + lipgloss.Height(questionView)
 	}
 	DrawCenterCursor(scr, area, view, cur)
 	return cur

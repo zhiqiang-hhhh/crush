@@ -99,9 +99,10 @@ func (a *AgentToolMessageItem) AddNestedTool(tool ToolMessageItem) {
 }
 
 // SetStreamingText sets the current streaming text from the sub-agent.
+// Cache is not cleared because the agent tool is spinning during streaming
+// and RawRender already bypasses the cache when isSpinning() is true.
 func (a *AgentToolMessageItem) SetStreamingText(text string) {
 	a.streamingText = text
-	a.clearCache()
 }
 
 // StreamingText returns the current streaming text.
@@ -456,7 +457,6 @@ func (w *WorkerToolMessageItem) AddNestedTool(tool ToolMessageItem) {
 // SetStreamingText sets the current streaming text from the sub-agent.
 func (w *WorkerToolMessageItem) SetStreamingText(text string) {
 	w.streamingText = text
-	w.clearCache()
 }
 
 // StreamingText returns the current streaming text.

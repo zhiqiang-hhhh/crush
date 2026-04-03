@@ -747,18 +747,9 @@ func (m *Chat) HandleDelayedClick(msg DelayedClickMsg) (bool, tea.Cmd) {
 	selectedItem := m.list.SelectedItem()
 	if clickable, ok := selectedItem.(list.MouseClickable); ok {
 		handled := clickable.HandleMouseClick(ansi.MouseButton1, msg.X, msg.Y)
-		// Toggle expansion if applicable.
-		if expandable, ok := selectedItem.(chat.Expandable); ok {
-			if !expandable.ToggleExpanded() {
-				m.ScrollToIndex(m.list.Selected())
-			}
-		}
-		m.list.InvalidateItemHeight(m.list.Selected())
-		if m.AtBottom() {
-			m.ScrollToBottom()
-		}
 
 		// Check if the item wants to open a preview.
+		// If a preview is opened, skip the toggle expansion.
 		if handled {
 			if previewable, ok := selectedItem.(chat.ImagePreviewable); ok {
 				if att := previewable.PendingImagePreview(); att != nil {
@@ -777,6 +768,17 @@ func (m *Chat) HandleDelayedClick(msg DelayedClickMsg) (bool, tea.Cmd) {
 					return true, func() tea.Msg { return TextPreviewMsg{Title: tp.Title, Text: tp.Text} }
 				}
 			}
+		}
+
+		// Toggle expansion if applicable (only when no preview was opened).
+		if expandable, ok := selectedItem.(chat.Expandable); ok {
+			if !expandable.ToggleExpanded() {
+				m.ScrollToIndex(m.list.Selected())
+			}
+		}
+		m.list.InvalidateItemHeight(m.list.Selected())
+		if m.AtBottom() {
+			m.ScrollToBottom()
 		}
 
 		return handled, nil

@@ -41,6 +41,21 @@ func TestAskUserCursorPosition(t *testing.T) {
 				AllowText: true,
 			},
 		},
+		{
+			name: "scrolling_question",
+			req: askuser.QuestionRequest{
+				Question: strings.Repeat("This is a very long question that needs scrolling. ", 20),
+			},
+		},
+		{
+			name: "body_with_text_input",
+			req: askuser.QuestionRequest{
+				Question:  "Approve this plan?",
+				Body:      strings.Repeat("Step 1: do something important\n", 10),
+				Options:   []askuser.Option{{Label: "Yes"}, {Label: "No"}},
+				AllowText: true,
+			},
+		},
 	}
 
 	for _, tt := range tests {
