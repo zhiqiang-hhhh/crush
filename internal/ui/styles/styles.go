@@ -227,6 +227,7 @@ type Styles struct {
 		Message struct {
 			UserBlurred      lipgloss.Style
 			UserFocused      lipgloss.Style
+			UserAgentBadge   lipgloss.Style
 			AssistantBlurred lipgloss.Style
 			AssistantFocused lipgloss.Style
 			NoContent        lipgloss.Style
@@ -448,6 +449,8 @@ type Styles struct {
 		Base            lipgloss.Style // Base pill style with padding
 		Focused         lipgloss.Style // Focused pill with visible border
 		Blurred         lipgloss.Style // Blurred pill with hidden border
+		Agent           lipgloss.Style // Agent pill style
+		AgentHint       lipgloss.Style // Agent pill hint text
 		QueueItemPrefix lipgloss.Style // Prefix for queue list items
 		HelpKey         lipgloss.Style // Keystroke hint style
 		HelpText        lipgloss.Style // Help action text style
@@ -1259,6 +1262,14 @@ func DefaultStyles() Styles {
 		BorderForeground(primary).BorderStyle(normalBorder)
 	s.Chat.Message.UserFocused = s.Chat.Message.NoContent.PaddingLeft(1).BorderLeft(true).
 		BorderForeground(primary).BorderStyle(messageFocussedBorder)
+	s.Chat.Message.UserAgentBadge = lipgloss.NewStyle().
+		Bold(true).
+		Padding(0, 1).
+		Foreground(charmtone.Cumin).
+		Background(charmtone.BBQ).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(charmtone.Cumin).
+		BorderTop(false).BorderBottom(false).BorderLeft(true).BorderRight(false)
 	s.Chat.Message.AssistantBlurred = s.Chat.Message.NoContent.PaddingLeft(2)
 	s.Chat.Message.AssistantFocused = s.Chat.Message.NoContent.PaddingLeft(1).BorderLeft(true).
 		BorderForeground(greenDark).BorderStyle(messageFocussedBorder)
@@ -1350,12 +1361,12 @@ func DefaultStyles() Styles {
 
 	s.Status.Help = lipgloss.NewStyle().Padding(0, 1)
 	s.Status.SuccessIndicator = base.Foreground(bgSubtle).Background(green).Padding(0, 1).Bold(true).SetString("OKAY!")
-	s.Status.InfoIndicator = s.Status.SuccessIndicator
+	s.Status.InfoIndicator = base.Foreground(charmtone.BBQ).Background(charmtone.Cumin).Padding(0, 1).Bold(true).SetString("◆")
 	s.Status.UpdateIndicator = s.Status.SuccessIndicator.SetString("HEY!")
 	s.Status.WarnIndicator = s.Status.SuccessIndicator.Foreground(bgOverlay).Background(yellow).SetString("WARNING")
 	s.Status.ErrorIndicator = s.Status.SuccessIndicator.Foreground(bgBase).Background(red).SetString("ERROR")
 	s.Status.SuccessMessage = base.Foreground(bgSubtle).Background(greenDark).Padding(0, 1)
-	s.Status.InfoMessage = s.Status.SuccessMessage
+	s.Status.InfoMessage = base.Foreground(charmtone.Cumin).Background(charmtone.BBQ).Padding(0, 1)
 	s.Status.UpdateMessage = s.Status.SuccessMessage
 	s.Status.WarnMessage = s.Status.SuccessMessage.Foreground(bgOverlay).Background(warning)
 	s.Status.ErrorMessage = s.Status.SuccessMessage.Foreground(white).Background(redDark)
@@ -1380,6 +1391,11 @@ func DefaultStyles() Styles {
 	s.Pills.HelpKey = s.Muted
 	s.Pills.HelpText = s.Subtle
 	s.Pills.Area = base
+	s.Pills.Agent = base.Padding(0, 1).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(charmtone.Cumin).
+		Foreground(charmtone.Cumin)
+	s.Pills.AgentHint = lipgloss.NewStyle().Foreground(charmtone.Oyster)
 	s.Pills.TodoSpinner = base.Foreground(greenDark)
 
 	return s

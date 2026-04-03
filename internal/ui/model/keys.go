@@ -79,8 +79,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+c", "quit"),
 		),
 		Help: key.NewBinding(
-			key.WithKeys("ctrl+g"),
-			key.WithHelp("ctrl+g", "more"),
+			key.WithKeys("ctrl+/"),
+			key.WithHelp("ctrl+/", "more"),
 		),
 		Commands: key.NewBinding(
 			key.WithKeys("ctrl+p"),
@@ -183,8 +183,8 @@ func DefaultKeyMap() KeyMap {
 		key.WithHelp("alt+a", "add attachment"),
 	)
 	km.Chat.Cancel = key.NewBinding(
-		key.WithKeys("esc", "alt+esc"),
-		key.WithHelp("esc", "cancel"),
+		key.WithKeys("ctrl+g"),
+		key.WithHelp("ctrl+g", "cancel"),
 	)
 	km.Chat.Tab = key.NewBinding(
 		key.WithKeys("tab"),

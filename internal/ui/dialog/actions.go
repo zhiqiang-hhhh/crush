@@ -54,6 +54,9 @@ type (
 	ActionToggleNotifications         struct{}
 	ActionToggleTransparentBackground struct{}
 	ActionInitializeProject           struct{}
+	ActionSwitchAgent                 struct {
+		AgentID string
+	}
 	ActionSummarize                   struct {
 		SessionID string
 	}

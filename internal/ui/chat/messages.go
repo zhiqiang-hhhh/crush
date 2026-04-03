@@ -304,7 +304,7 @@ func ExtractMessageItems(sty *styles.Styles, msg *message.Message, toolResults m
 			sty.Attachments.Image,
 			sty.Attachments.Text,
 		)
-		return []MessageItem{NewUserMessageItem(sty, msg, r)}
+		return []MessageItem{NewUserMessageItem(sty, msg, r, msg.AgentName)}
 	case message.Assistant:
 		var items []MessageItem
 		if ShouldRenderAssistantMessage(msg) {

@@ -73,12 +73,14 @@ type Commands struct {
 
 	dockerMCPAvailable     *bool
 	dockerMCPCheckInFlight bool
+
+	activeAgent string
 }
 
 var _ Dialog = (*Commands)(nil)
 
 // NewCommands creates a new commands dialog.
-func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt) (*Commands, error) {
+func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, hasQueue bool, customCommands []commands.CustomCommand, mcpPrompts []commands.MCPPrompt, activeAgent string) (*Commands, error) {
 	c := &Commands{
 		com:            com,
 		selected:       SystemCommands,
@@ -88,6 +90,7 @@ func NewCommands(com *common.Common, sessionID string, hasSession, hasTodos, has
 		hasQueue:       hasQueue,
 		customCommands: customCommands,
 		mcpPrompts:     mcpPrompts,
+		activeAgent:    activeAgent,
 	}
 
 	help := help.New()
@@ -524,9 +527,19 @@ func (c *Commands) defaultCommands() []*CommandItem {
 
 	commands = append(commands,
 		NewCommandItem(c.com.Styles, "toggle_yolo", "Toggle Yolo Mode", "ctrl+y", ActionToggleYoloMode{}),
-		NewCommandItem(c.com.Styles, "toggle_help", "Toggle Help", "ctrl+g", ActionToggleHelp{}),
+		NewCommandItem(c.com.Styles, "toggle_help", "Toggle Help", "ctrl+/", ActionToggleHelp{}),
 		NewCommandItem(c.com.Styles, "init", "Initialize Project", "", ActionInitializeProject{}),
 	)
+
+	for _, agentID := range config.TopLevelAgents() {
+		agentCfg, ok := cfg.Agents[agentID]
+		if !ok || agentID == c.activeAgent {
+			continue
+		}
+		commands = append(commands,
+			NewCommandItem(c.com.Styles, "switch_agent_"+agentID, "Switch to "+agentCfg.Name, "", ActionSwitchAgent{AgentID: agentID}),
+		)
+	}
 
 	// Add transparent background toggle.
 	transparentLabel := "Disable Background Color"

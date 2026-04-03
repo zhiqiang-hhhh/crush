@@ -190,7 +190,10 @@ func (m *UI) pillsAreaHeight() int {
 		hasIncomplete = hasIncompleteTodos(m.session.Todos)
 	}
 	hasQueue := m.promptQueue > 0
-	hasPills := hasIncomplete || hasQueue
+
+	hasAgent := m.com.App != nil && m.com.App.AgentCoordinator != nil
+
+	hasPills := hasIncomplete || hasQueue || hasAgent
 	if !hasPills {
 		return 0
 	}
@@ -227,7 +230,13 @@ func (m *UI) renderPills() {
 	}
 	hasQueue := m.promptQueue > 0
 
-	if !hasIncomplete && !hasQueue {
+	activeAgent := ""
+	hasAgent := m.com.App != nil && m.com.App.AgentCoordinator != nil
+	if hasAgent {
+		activeAgent = m.com.App.AgentCoordinator.ActiveAgent()
+	}
+
+	if !hasIncomplete && !hasQueue && !hasAgent {
 		return
 	}
 
@@ -241,6 +250,12 @@ func (m *UI) renderPills() {
 	}
 
 	var pills []string
+	if hasAgent && activeAgent != "" {
+		agentCfg := m.com.Config().Agents[activeAgent]
+		label := "◆ " + agentCfg.Name
+		hint := t.Pills.AgentHint.Render(" tab")
+		pills = append(pills, t.Pills.Agent.Render(label+hint))
+	}
 	if hasIncomplete {
 		pills = append(pills, todoPill(m.session.Todos, inProgressIcon, todosFocused, m.pillsExpanded, t))
 	}

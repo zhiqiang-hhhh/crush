@@ -22,12 +22,13 @@ type UserMessageItem struct {
 	attachments        *attachments.Renderer
 	message            *message.Message
 	sty                *styles.Styles
+	agentName          string
 	pendingPreview     *message.Attachment
 	pendingTextPreview *TextPreviewContent
 }
 
 // NewUserMessageItem creates a new UserMessageItem.
-func NewUserMessageItem(sty *styles.Styles, message *message.Message, attachments *attachments.Renderer) MessageItem {
+func NewUserMessageItem(sty *styles.Styles, message *message.Message, attachments *attachments.Renderer, agentName string) MessageItem {
 	return &UserMessageItem{
 		highlightableMessageItem: defaultHighlighter(sty),
 		cachedMessageItem:        &cachedMessageItem{},
@@ -35,6 +36,7 @@ func NewUserMessageItem(sty *styles.Styles, message *message.Message, attachment
 		attachments:              attachments,
 		message:                  message,
 		sty:                      sty,
+		agentName:                agentName,
 	}
 }
 
@@ -80,16 +82,28 @@ func (m *UserMessageItem) Render(width int) string {
 	} else {
 		prefix = m.sty.Chat.Message.UserBlurred.Render()
 	}
+
+	var badge string
+	if m.agentName != "" {
+		badge = m.sty.Chat.Message.UserAgentBadge.Render("◆ " + m.agentName) + "\n"
+	}
+
 	lines := strings.Split(m.RawRender(width), "\n")
 	for i, line := range lines {
 		lines[i] = prefix + line
 	}
-	return strings.Join(lines, "\n")
+	return badge + strings.Join(lines, "\n")
 }
 
 // ID implements MessageItem.
 func (m *UserMessageItem) ID() string {
 	return m.message.ID
+}
+
+// SetAgentName sets the agent name badge for this user message.
+func (m *UserMessageItem) SetAgentName(name string) {
+	m.agentName = name
+	m.clearCache()
 }
 
 // renderAttachments renders attachments.

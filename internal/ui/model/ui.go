@@ -199,7 +199,7 @@ type UI struct {
 	dialog *dialog.Overlay
 	status *Status
 
-	// isCanceling tracks whether the user has pressed escape once to cancel.
+	// isCanceling tracks whether the user has pressed ctrl+g once to cancel.
 	isCanceling bool
 
 	header *header
@@ -1421,6 +1421,19 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.com.App.Permissions.SetSkipRequests(yolo)
 		m.setEditorPrompt(yolo)
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionSwitchAgent:
+		if m.isAgentBusy() {
+			cmds = append(cmds, util.ReportWarn("Agent is working, please wait..."))
+			break
+		}
+		if err := m.com.App.AgentCoordinator.SetMainAgent(msg.AgentID); err != nil {
+			cmds = append(cmds, util.ReportError(err))
+		} else {
+			agentCfg := m.com.Config().Agents[msg.AgentID]
+			cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Switched to "+agentCfg.Name+" agent")))
+			m.renderPills()
+		}
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionToggleNotifications:
 		cfg := m.com.Config()
 		if cfg != nil && cfg.Options != nil {
@@ -1975,6 +1988,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				if cmd := m.openCommandsDialog(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
+			case key.Matches(msg, m.keyMap.Tab):
+				if cmd := m.cycleAgent(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			default:
 				if handleGlobalKeys(msg) {
 					// Handle global keys first before passing to textarea.
@@ -2415,9 +2432,9 @@ func (m *UI) ShortHelp() []key.Binding {
 		if m.isAgentBusy() {
 			cancelBinding := k.Chat.Cancel
 			if m.isCanceling {
-				cancelBinding.SetHelp("esc", "press again to cancel")
+				cancelBinding.SetHelp("ctrl+g", "press again to cancel")
 			} else if m.com.App.AgentCoordinator.QueuedPrompts(m.session.ID) > 0 {
-				cancelBinding.SetHelp("esc", "clear queue")
+				cancelBinding.SetHelp("ctrl+g", "clear queue")
 			}
 			binds = append(binds, cancelBinding)
 		}
@@ -2450,7 +2467,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 	var binds [][]key.Binding
 	k := &m.keyMap
 	help := k.Help
-	help.SetHelp("ctrl+g", "less")
+	help.SetHelp("ctrl+/", "less")
 	hasAttachments := len(m.attachments.List()) > 0
 	hasSession := m.hasSession()
 	commands := k.Commands
@@ -2468,9 +2485,9 @@ func (m *UI) FullHelp() [][]key.Binding {
 		if m.isAgentBusy() {
 			cancelBinding := k.Chat.Cancel
 			if m.isCanceling {
-				cancelBinding.SetHelp("esc", "press again to cancel")
+				cancelBinding.SetHelp("ctrl+g", "press again to cancel")
 			} else if m.com.App.AgentCoordinator.QueuedPrompts(m.session.ID) > 0 {
-				cancelBinding.SetHelp("esc", "clear queue")
+				cancelBinding.SetHelp("ctrl+g", "clear queue")
 			}
 			binds = append(binds, []key.Binding{cancelBinding})
 		}
@@ -3243,6 +3260,32 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 	return tea.Batch(cmds...)
 }
 
+// cycleAgent switches to the next top-level agent in round-robin order.
+func (m *UI) cycleAgent() tea.Cmd {
+	if m.com.App == nil || m.com.App.AgentCoordinator == nil {
+		return nil
+	}
+	if m.isAgentBusy() {
+		return util.ReportWarn("Agent is working, please wait...")
+	}
+	agents := config.TopLevelAgents()
+	current := m.com.App.AgentCoordinator.ActiveAgent()
+	nextIdx := 0
+	for i, id := range agents {
+		if id == current {
+			nextIdx = (i + 1) % len(agents)
+			break
+		}
+	}
+	next := agents[nextIdx]
+	if err := m.com.App.AgentCoordinator.SetMainAgent(next); err != nil {
+		return util.ReportError(err)
+	}
+	agentCfg := m.com.Config().Agents[next]
+	m.renderPills()
+	return util.CmdHandler(util.NewInfoMsg("Switched to " + agentCfg.Name + " agent"))
+}
+
 const cancelTimerDuration = 2 * time.Second
 
 // cancelTimerCmd creates a command that expires the cancel timer.
@@ -3266,7 +3309,7 @@ func (m *UI) cancelAgent() tea.Cmd {
 	}
 
 	if m.isCanceling {
-		// Second escape press - actually cancel the agent.
+		// Second ctrl+g press - actually cancel the agent.
 		m.isCanceling = false
 		coordinator.Cancel(m.session.ID)
 		// Stop the spinning todo indicator.
@@ -3281,7 +3324,7 @@ func (m *UI) cancelAgent() tea.Cmd {
 		return nil
 	}
 
-	// First escape press - set canceling state and start timer.
+	// First ctrl+g press - set canceling state and start timer.
 	m.isCanceling = true
 	return cancelTimerCmd()
 }
@@ -3391,7 +3434,12 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 	hasTodos := hasSession && hasIncompleteTodos(m.session.Todos)
 	hasQueue := m.promptQueue > 0
 
-	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.customCommands, m.mcpPrompts)
+	activeAgent := config.AgentCoder
+	if m.com.App != nil && m.com.App.AgentCoordinator != nil {
+		activeAgent = m.com.App.AgentCoordinator.ActiveAgent()
+	}
+
+	commands, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.customCommands, m.mcpPrompts, activeAgent)
 	if err != nil {
 		return util.ReportError(err)
 	}
