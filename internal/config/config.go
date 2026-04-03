@@ -488,8 +488,9 @@ const maxRecentModelsPerType = 5
 
 func resolveWorkerTools(tools []string) []string {
 	workerTools := []string{
-		"bash", "diff", "edit", "multiedit", "fetch", "glob", "grep",
-		"job_output", "job_kill", "ls", "sourcegraph", "view", "write",
+		"bash", "diff", "edit", "multiedit", "fetch", "agentic_fetch", "glob", "grep",
+		"job_output", "job_kill", "ls",
+		"sourcegraph", "view", "write",
 		"web_search", "download",
 	}
 	return filterSlice(tools, workerTools, true)
@@ -506,9 +507,6 @@ func allToolNames() []string {
 		"download",
 		"edit",
 		"multiedit",
-		"lsp_diagnostics",
-		"lsp_references",
-		"lsp_restart",
 		"fetch",
 		"agentic_fetch",
 		"glob",
@@ -543,7 +541,7 @@ func resolveReadOnlyTools(tools []string) []string {
 func resolvePlannerTools(tools []string) []string {
 	plannerTools := []string{
 		"agent", "ask_user", "diff", "fetch", "agentic_fetch", "glob", "grep",
-		"job_output", "ls", "lsp_diagnostics", "lsp_references",
+		"ls",
 		"list_mcp_resources", "read_mcp_resource", "memory_search",
 		"sourcegraph", "todos", "view", "web_search",
 	}
@@ -587,7 +585,7 @@ func (c *Config) SetupAgents() {
 		AgentSuperpowers: {
 			ID:           AgentSuperpowers,
 			Name:         "Superpowers",
-			Description:  "A methodology-driven agent emphasizing design-first thinking, TDD, and systematic debugging.",
+			Description:  "Methodology-driven agent: design first, test first, debug systematically, prove completion. Inspired by obra/superpowers.",
 			Model:        SelectedModelTypeLarge,
 			ContextPaths: c.Options.ContextPaths,
 			AllowedTools: allowedTools,
