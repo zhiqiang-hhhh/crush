@@ -89,6 +89,10 @@ func (m *mockSessionService) IsAgentToolSession(sessionID string) bool {
 	return ok
 }
 
+func (m *mockSessionService) Fork(_ context.Context, _ string) (session.Session, error) {
+	return session.Session{}, fmt.Errorf("not implemented")
+}
+
 func newTestApp(sessions session.Service) *App {
 	return &App{Sessions: sessions}
 }

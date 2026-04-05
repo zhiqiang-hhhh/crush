@@ -48,6 +48,15 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionMessagesStmt, err = db.PrepareContext(ctx, deleteSessionMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionMessages: %w", err)
 	}
+	if q.forkSessionFilesStmt, err = db.PrepareContext(ctx, forkSessionFiles); err != nil {
+		return nil, fmt.Errorf("error preparing query ForkSessionFiles: %w", err)
+	}
+	if q.forkSessionMessagesStmt, err = db.PrepareContext(ctx, forkSessionMessages); err != nil {
+		return nil, fmt.Errorf("error preparing query ForkSessionMessages: %w", err)
+	}
+	if q.forkSessionReadFilesStmt, err = db.PrepareContext(ctx, forkSessionReadFiles); err != nil {
+		return nil, fmt.Errorf("error preparing query ForkSessionReadFiles: %w", err)
+	}
 	if q.getAverageResponseTimeStmt, err = db.PrepareContext(ctx, getAverageResponseTime); err != nil {
 		return nil, fmt.Errorf("error preparing query GetAverageResponseTime: %w", err)
 	}
@@ -181,6 +190,21 @@ func (q *Queries) Close() error {
 	if q.deleteSessionMessagesStmt != nil {
 		if cerr := q.deleteSessionMessagesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteSessionMessagesStmt: %w", cerr)
+		}
+	}
+	if q.forkSessionFilesStmt != nil {
+		if cerr := q.forkSessionFilesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing forkSessionFilesStmt: %w", cerr)
+		}
+	}
+	if q.forkSessionMessagesStmt != nil {
+		if cerr := q.forkSessionMessagesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing forkSessionMessagesStmt: %w", cerr)
+		}
+	}
+	if q.forkSessionReadFilesStmt != nil {
+		if cerr := q.forkSessionReadFilesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing forkSessionReadFilesStmt: %w", cerr)
 		}
 	}
 	if q.getAverageResponseTimeStmt != nil {
@@ -380,6 +404,9 @@ type Queries struct {
 	deleteSessionStmt               *sql.Stmt
 	deleteSessionFilesStmt          *sql.Stmt
 	deleteSessionMessagesStmt       *sql.Stmt
+	forkSessionFilesStmt            *sql.Stmt
+	forkSessionMessagesStmt         *sql.Stmt
+	forkSessionReadFilesStmt        *sql.Stmt
 	getAverageResponseTimeStmt      *sql.Stmt
 	getFileStmt                     *sql.Stmt
 	getFileByPathAndSessionStmt     *sql.Stmt
@@ -424,6 +451,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteSessionStmt:               q.deleteSessionStmt,
 		deleteSessionFilesStmt:          q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:       q.deleteSessionMessagesStmt,
+		forkSessionFilesStmt:            q.forkSessionFilesStmt,
+		forkSessionMessagesStmt:         q.forkSessionMessagesStmt,
+		forkSessionReadFilesStmt:        q.forkSessionReadFilesStmt,
 		getAverageResponseTimeStmt:      q.getAverageResponseTimeStmt,
 		getFileStmt:                     q.getFileStmt,
 		getFileByPathAndSessionStmt:     q.getFileByPathAndSessionStmt,

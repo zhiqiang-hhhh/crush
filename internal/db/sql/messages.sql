@@ -68,3 +68,10 @@ FROM messages m
 WHERE m.session_id = ? AND m.rowid < (SELECT mm.rowid FROM messages mm WHERE mm.id = ?)
 ORDER BY m.rowid DESC
 LIMIT ?;
+
+-- name: ForkSessionMessages :exec
+INSERT INTO messages (id, session_id, role, parts, model, provider, is_summary_message, agent_name, created_at, updated_at, finished_at)
+SELECT hex(randomblob(16)), @new_session_id, role, parts, model, provider, is_summary_message, agent_name, created_at, updated_at, finished_at
+FROM messages
+WHERE messages.session_id = @source_session_id
+ORDER BY rowid ASC;

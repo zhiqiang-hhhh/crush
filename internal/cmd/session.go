@@ -43,6 +43,7 @@ var (
 	sessionLastJSON   bool
 	sessionDeleteJSON bool
 	sessionRenameJSON bool
+	sessionForkJSON   bool
 )
 
 var sessionListCmd = &cobra.Command{
@@ -85,17 +86,29 @@ var sessionRenameCmd = &cobra.Command{
 	RunE:  runSessionRename,
 }
 
+var sessionForkCmd = &cobra.Command{
+	Use:   "fork [id]",
+	Short: "Fork a session",
+	Long: `Fork a session by copying all messages, files, and read-files into a new session.
+If no ID is given and running inside tmux, the active session is read from the
+@crush_session pane option. Use --json for machine-readable output.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runSessionFork,
+}
+
 func init() {
 	sessionListCmd.Flags().BoolVar(&sessionListJSON, "json", false, "output in JSON format")
 	sessionShowCmd.Flags().BoolVar(&sessionShowJSON, "json", false, "output in JSON format")
 	sessionLastCmd.Flags().BoolVar(&sessionLastJSON, "json", false, "output in JSON format")
 	sessionDeleteCmd.Flags().BoolVar(&sessionDeleteJSON, "json", false, "output in JSON format")
 	sessionRenameCmd.Flags().BoolVar(&sessionRenameJSON, "json", false, "output in JSON format")
+	sessionForkCmd.Flags().BoolVar(&sessionForkJSON, "json", false, "output in JSON format")
 	sessionCmd.AddCommand(sessionListCmd)
 	sessionCmd.AddCommand(sessionShowCmd)
 	sessionCmd.AddCommand(sessionLastCmd)
 	sessionCmd.AddCommand(sessionDeleteCmd)
 	sessionCmd.AddCommand(sessionRenameCmd)
+	sessionCmd.AddCommand(sessionForkCmd)
 }
 
 type sessionServices struct {
@@ -349,6 +362,50 @@ func runSessionRename(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(out, "Renamed session %s to %q\n", session.HashID(sess.ID)[:12], newTitle)
+	return nil
+}
+
+func runSessionFork(cmd *cobra.Command, args []string) error {
+	event.SetNonInteractive(true)
+
+	ctx, svc, cleanup, err := sessionSetup(cmd)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	var sourceID string
+	if len(args) > 0 {
+		sourceID = args[0]
+	} else if os.Getenv("TMUX") != "" {
+		out, err := exec.CommandContext(ctx, "tmux", "show-option", "-pqv", "@crush_session").Output()
+		if err == nil {
+			sourceID = strings.TrimSpace(string(out))
+		}
+		if sourceID == "" {
+			return fmt.Errorf("no session ID given and @crush_session pane option is empty")
+		}
+	} else {
+		return fmt.Errorf("no session ID given (provide one or run inside tmux)")
+	}
+
+	forked, err := svc.sessions.Fork(ctx, sourceID)
+	if err != nil {
+		return fmt.Errorf("failed to fork session: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	if sessionForkJSON {
+		enc := json.NewEncoder(out)
+		enc.SetEscapeHTML(false)
+		return enc.Encode(sessionMutationResult{
+			ID:    session.HashID(forked.ID),
+			UUID:  forked.ID,
+			Title: forked.Title,
+		})
+	}
+
+	fmt.Fprintln(out, forked.ID)
 	return nil
 }
 

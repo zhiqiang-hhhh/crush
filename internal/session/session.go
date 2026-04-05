@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/event"
@@ -77,6 +78,10 @@ type Service interface {
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
 	IsAgentToolSession(sessionID string) bool
+
+	// Fork creates a copy of the given session (including messages, files,
+	// and read-files) and returns the new session.
+	Fork(ctx context.Context, sessionID string) (Session, error)
 }
 
 type service struct {
@@ -165,6 +170,62 @@ func (s *service) Get(ctx context.Context, id string) (Session, error) {
 		return Session{}, err
 	}
 	return s.fromDBItem(dbSession), nil
+}
+
+func (s *service) Fork(ctx context.Context, sessionID string) (Session, error) {
+	src, err := s.q.GetSessionByID(ctx, sessionID)
+	if err != nil {
+		return Session{}, fmt.Errorf("getting source session: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	qtx := s.q.WithTx(tx)
+
+	newID := uuid.New().String()
+	newSession, err := qtx.CreateSession(ctx, db.CreateSessionParams{
+		ID:               newID,
+		Title:            src.Title + " (fork " + time.Now().Format("2006-01-02 15:04:05") + ")",
+		PromptTokens:     src.PromptTokens,
+		CompletionTokens: src.CompletionTokens,
+		Cost:             src.Cost,
+	})
+	if err != nil {
+		return Session{}, fmt.Errorf("creating forked session: %w", err)
+	}
+
+	if err = qtx.ForkSessionMessages(ctx, db.ForkSessionMessagesParams{
+		NewSessionID:    newID,
+		SourceSessionID: sessionID,
+	}); err != nil {
+		return Session{}, fmt.Errorf("forking messages: %w", err)
+	}
+
+	if err = qtx.ForkSessionFiles(ctx, db.ForkSessionFilesParams{
+		NewSessionID:    newID,
+		SourceSessionID: sessionID,
+	}); err != nil {
+		return Session{}, fmt.Errorf("forking files: %w", err)
+	}
+
+	if err = qtx.ForkSessionReadFiles(ctx, db.ForkSessionReadFilesParams{
+		NewSessionID:    newID,
+		SourceSessionID: sessionID,
+	}); err != nil {
+		return Session{}, fmt.Errorf("forking read files: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("committing transaction: %w", err)
+	}
+
+	session := s.fromDBItem(newSession)
+	s.Publish(pubsub.CreatedEvent, session)
+	return session, nil
 }
 
 func (s *service) GetLast(ctx context.Context) (Session, error) {

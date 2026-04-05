@@ -87,6 +87,24 @@ func (q *Queries) DeleteSessionMessages(ctx context.Context, sessionID string) e
 	return err
 }
 
+const forkSessionMessages = `-- name: ForkSessionMessages :exec
+INSERT INTO messages (id, session_id, role, parts, model, provider, is_summary_message, agent_name, created_at, updated_at, finished_at)
+SELECT hex(randomblob(16)), ?1, role, parts, model, provider, is_summary_message, agent_name, created_at, updated_at, finished_at
+FROM messages
+WHERE messages.session_id = ?2
+ORDER BY rowid ASC
+`
+
+type ForkSessionMessagesParams struct {
+	NewSessionID    string `json:"new_session_id"`
+	SourceSessionID string `json:"source_session_id"`
+}
+
+func (q *Queries) ForkSessionMessages(ctx context.Context, arg ForkSessionMessagesParams) error {
+	_, err := q.exec(ctx, q.forkSessionMessagesStmt, forkSessionMessages, arg.NewSessionID, arg.SourceSessionID)
+	return err
+}
+
 const getMessage = `-- name: GetMessage :one
 SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, agent_name
 FROM messages

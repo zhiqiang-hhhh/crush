@@ -73,6 +73,24 @@ func (q *Queries) DeleteSessionFiles(ctx context.Context, sessionID string) erro
 	return err
 }
 
+const forkSessionFiles = `-- name: ForkSessionFiles :exec
+INSERT INTO files (id, session_id, path, content, version, created_at, updated_at)
+SELECT hex(randomblob(16)), ?1, path, content, version, created_at, updated_at
+FROM files
+WHERE files.session_id = ?2
+ORDER BY rowid ASC
+`
+
+type ForkSessionFilesParams struct {
+	NewSessionID    string `json:"new_session_id"`
+	SourceSessionID string `json:"source_session_id"`
+}
+
+func (q *Queries) ForkSessionFiles(ctx context.Context, arg ForkSessionFilesParams) error {
+	_, err := q.exec(ctx, q.forkSessionFilesStmt, forkSessionFiles, arg.NewSessionID, arg.SourceSessionID)
+	return err
+}
+
 const getFile = `-- name: GetFile :one
 SELECT id, session_id, path, content, version, created_at, updated_at
 FROM files

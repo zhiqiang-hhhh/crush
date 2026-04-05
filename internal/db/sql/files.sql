@@ -56,4 +56,10 @@ INNER JOIN (
 WHERE f.session_id = ?
 ORDER BY f.path;
 
+-- name: ForkSessionFiles :exec
+INSERT INTO files (id, session_id, path, content, version, created_at, updated_at)
+SELECT hex(randomblob(16)), @new_session_id, path, content, version, created_at, updated_at
+FROM files
+WHERE files.session_id = @source_session_id
+ORDER BY rowid ASC;
 

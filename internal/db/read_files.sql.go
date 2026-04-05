@@ -9,6 +9,23 @@ import (
 	"context"
 )
 
+const forkSessionReadFiles = `-- name: ForkSessionReadFiles :exec
+INSERT OR IGNORE INTO read_files (session_id, path, read_at)
+SELECT ?1, path, read_at
+FROM read_files
+WHERE read_files.session_id = ?2
+`
+
+type ForkSessionReadFilesParams struct {
+	NewSessionID    string `json:"new_session_id"`
+	SourceSessionID string `json:"source_session_id"`
+}
+
+func (q *Queries) ForkSessionReadFiles(ctx context.Context, arg ForkSessionReadFilesParams) error {
+	_, err := q.exec(ctx, q.forkSessionReadFilesStmt, forkSessionReadFiles, arg.NewSessionID, arg.SourceSessionID)
+	return err
+}
+
 const getFileRead = `-- name: GetFileRead :one
 SELECT session_id, path, read_at FROM read_files
 WHERE session_id = ? AND path = ? LIMIT 1

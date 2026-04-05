@@ -18,3 +18,9 @@ WHERE session_id = ? AND path = ? LIMIT 1;
 SELECT * FROM read_files
 WHERE session_id = ?
 ORDER BY read_at DESC;
+
+-- name: ForkSessionReadFiles :exec
+INSERT OR IGNORE INTO read_files (session_id, path, read_at)
+SELECT @new_session_id, path, read_at
+FROM read_files
+WHERE read_files.session_id = @source_session_id;
