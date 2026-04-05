@@ -84,6 +84,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getSessionByIDStmt, err = db.PrepareContext(ctx, getSessionByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionByID: %w", err)
 	}
+	if q.getSummaryMessageIDStmt, err = db.PrepareContext(ctx, getSummaryMessageID); err != nil {
+		return nil, fmt.Errorf("error preparing query GetSummaryMessageID: %w", err)
+	}
 	if q.getToolUsageStmt, err = db.PrepareContext(ctx, getToolUsage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetToolUsage: %w", err)
 	}
@@ -252,6 +255,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getSessionByIDStmt: %w", cerr)
 		}
 	}
+	if q.getSummaryMessageIDStmt != nil {
+		if cerr := q.getSummaryMessageIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getSummaryMessageIDStmt: %w", cerr)
+		}
+	}
 	if q.getToolUsageStmt != nil {
 		if cerr := q.getToolUsageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getToolUsageStmt: %w", cerr)
@@ -416,6 +424,7 @@ type Queries struct {
 	getMessageStmt                  *sql.Stmt
 	getRecentActivityStmt           *sql.Stmt
 	getSessionByIDStmt              *sql.Stmt
+	getSummaryMessageIDStmt         *sql.Stmt
 	getToolUsageStmt                *sql.Stmt
 	getTotalStatsStmt               *sql.Stmt
 	getUsageByDayStmt               *sql.Stmt
@@ -463,6 +472,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getMessageStmt:                  q.getMessageStmt,
 		getRecentActivityStmt:           q.getRecentActivityStmt,
 		getSessionByIDStmt:              q.getSessionByIDStmt,
+		getSummaryMessageIDStmt:         q.getSummaryMessageIDStmt,
 		getToolUsageStmt:                q.getToolUsageStmt,
 		getTotalStatsStmt:               q.getTotalStatsStmt,
 		getUsageByDayStmt:               q.getUsageByDayStmt,

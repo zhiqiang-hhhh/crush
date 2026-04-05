@@ -219,6 +219,24 @@ func (s *service) Fork(ctx context.Context, sessionID string) (Session, error) {
 		return Session{}, fmt.Errorf("forking read files: %w", err)
 	}
 
+	if src.SummaryMessageID.Valid {
+		summaryID, err := qtx.GetSummaryMessageID(ctx, newID)
+		if err == nil {
+			newSession, err = qtx.UpdateSession(ctx, db.UpdateSessionParams{
+				ID:               newID,
+				Title:            newSession.Title,
+				PromptTokens:     newSession.PromptTokens,
+				CompletionTokens: newSession.CompletionTokens,
+				SummaryMessageID: sql.NullString{String: summaryID, Valid: true},
+				Cost:             newSession.Cost,
+				Todos:            newSession.Todos,
+			})
+			if err != nil {
+				return Session{}, fmt.Errorf("setting summary message id: %w", err)
+			}
+		}
+	}
+
 	if err = tx.Commit(); err != nil {
 		return Session{}, fmt.Errorf("committing transaction: %w", err)
 	}

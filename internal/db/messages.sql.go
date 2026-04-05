@@ -130,6 +130,21 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 	return i, err
 }
 
+const getSummaryMessageID = `-- name: GetSummaryMessageID :one
+SELECT id
+FROM messages
+WHERE session_id = ? AND is_summary_message = 1
+ORDER BY rowid DESC
+LIMIT 1
+`
+
+func (q *Queries) GetSummaryMessageID(ctx context.Context, sessionID string) (string, error) {
+	row := q.queryRow(ctx, q.getSummaryMessageIDStmt, getSummaryMessageID, sessionID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listAllUserMessages = `-- name: ListAllUserMessages :many
 SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, agent_name
 FROM messages

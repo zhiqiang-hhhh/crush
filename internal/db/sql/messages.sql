@@ -69,6 +69,13 @@ WHERE m.session_id = ? AND m.rowid < (SELECT mm.rowid FROM messages mm WHERE mm.
 ORDER BY m.rowid DESC
 LIMIT ?;
 
+-- name: GetSummaryMessageID :one
+SELECT id
+FROM messages
+WHERE session_id = ? AND is_summary_message = 1
+ORDER BY rowid DESC
+LIMIT 1;
+
 -- name: ForkSessionMessages :exec
 INSERT INTO messages (id, session_id, role, parts, model, provider, is_summary_message, agent_name, created_at, updated_at, finished_at)
 SELECT hex(randomblob(16)), @new_session_id, role, parts, model, provider, is_summary_message, agent_name, created_at, updated_at, finished_at
