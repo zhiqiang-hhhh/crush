@@ -166,6 +166,9 @@ func defaultPermissionsKeyMap() permissionsKeyMap {
 
 var _ Dialog = (*Permissions)(nil)
 
+// RequestID returns the ID of the underlying permission request.
+func (p *Permissions) RequestID() string { return p.permission.ID }
+
 // PermissionsOption configures the permissions dialog.
 type PermissionsOption func(*Permissions)
 

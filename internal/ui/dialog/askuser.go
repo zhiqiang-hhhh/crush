@@ -80,6 +80,9 @@ type askUserKeyMap struct {
 
 var _ Dialog = (*AskUser)(nil)
 
+// RequestID returns the ID of the underlying question request.
+func (a *AskUser) RequestID() string { return a.request.ID }
+
 // NewAskUser creates a new ask_user dialog.
 func NewAskUser(com *common.Common, req askuser.QuestionRequest) *AskUser {
 	h := help.New()
@@ -126,8 +129,8 @@ func NewAskUser(com *common.Common, req askuser.QuestionRequest) *AskUser {
 				key.WithHelp("↑/↓", "choose"),
 			),
 			Close: key.NewBinding(
-				key.WithKeys("esc"),
-				key.WithHelp("esc", "dismiss"),
+				key.WithKeys("ctrl+g"),
+				key.WithHelp("ctrl+g", "dismiss"),
 			),
 			Toggle: key.NewBinding(
 				key.WithKeys("space", " "),
@@ -138,8 +141,8 @@ func NewAskUser(com *common.Common, req askuser.QuestionRequest) *AskUser {
 				key.WithHelp("t", "type answer"),
 			),
 			Back: key.NewBinding(
-				key.WithKeys("esc"),
-				key.WithHelp("esc", "back to options"),
+				key.WithKeys("ctrl+g"),
+				key.WithHelp("ctrl+g", "back to options"),
 			),
 			ScrollUp: key.NewBinding(
 				key.WithKeys("shift+up", "shift+k"),
