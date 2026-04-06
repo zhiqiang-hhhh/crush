@@ -205,23 +205,29 @@ func (s *service) Fork(ctx context.Context, sessionID string) (Session, error) {
 		return Session{}, fmt.Errorf("forking messages: %w", err)
 	}
 
-	// Trim any in-progress assistant turn from the forked session.
-	// If the source had an unfinished assistant message (LLM still
-	// streaming), remove it and everything after it so the fork
-	// starts from the last cleanly completed state.
+	// Trim the forked session to the last complete agent loop.
+	// A complete loop ends with an assistant message whose finish
+	// reason is "end_turn".  Everything after that (including
+	// partial loops still in progress or ones that errored out)
+	// is removed.
 	msgs, err := qtx.ListMessagesBySession(ctx, newID)
 	if err != nil {
 		return Session{}, fmt.Errorf("listing forked messages: %w", err)
 	}
-	firstUnfinished := -1
-	for i, msg := range msgs {
-		if msg.Role == "assistant" && !msg.FinishedAt.Valid {
-			firstUnfinished = i
+	lastEndTurn := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" && isEndTurnFinish(msgs[i].Parts) {
+			lastEndTurn = i
 			break
 		}
 	}
-	if firstUnfinished >= 0 {
-		for i := firstUnfinished; i < len(msgs); i++ {
+	if lastEndTurn == -1 {
+		// No completed loop — clear all messages (empty / landing page).
+		if err = qtx.DeleteSessionMessages(ctx, newID); err != nil {
+			return Session{}, fmt.Errorf("clearing forked messages: %w", err)
+		}
+	} else if lastEndTurn < len(msgs)-1 {
+		for i := lastEndTurn + 1; i < len(msgs); i++ {
 			if err = qtx.DeleteMessage(ctx, msgs[i].ID); err != nil {
 				return Session{}, fmt.Errorf("trimming forked message %s: %w", msgs[i].ID, err)
 			}
@@ -420,4 +426,38 @@ func (s *service) ParseAgentToolSessionID(sessionID string) (messageID string, t
 func (s *service) IsAgentToolSession(sessionID string) bool {
 	_, _, ok := s.ParseAgentToolSessionID(sessionID)
 	return ok
+}
+
+// isErrorFinish checks whether the JSON-encoded message parts contain a
+// finish part whose reason is "error".  This is used during fork to
+// detect assistant messages that ended due to a provider error or
+// stream timeout (they have finished_at set but aren't truly complete).
+func isErrorFinish(partsJSON string) bool {
+	return hasFinishReason(partsJSON, "error")
+}
+
+func isEndTurnFinish(partsJSON string) bool {
+	return hasFinishReason(partsJSON, "end_turn")
+}
+
+func hasFinishReason(partsJSON string, reason string) bool {
+	var parts []struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
+		return false
+	}
+	for _, p := range parts {
+		if p.Type == "finish" {
+			var finish struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(p.Data, &finish); err != nil {
+				return false
+			}
+			return finish.Reason == reason
+		}
+	}
+	return false
 }
