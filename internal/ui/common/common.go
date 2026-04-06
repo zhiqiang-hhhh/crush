@@ -10,6 +10,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/mux"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	"github.com/charmbracelet/crush/internal/workspace"
@@ -28,6 +29,7 @@ type Common struct {
 	Workspace workspace.Workspace
 	App       *app.App
 	Styles    *styles.Styles
+	Mux       *mux.Mux
 }
 
 // Config returns the pure-data configuration associated with this [Common] instance.
@@ -41,6 +43,7 @@ func DefaultCommon(ws workspace.Workspace) *Common {
 	return &Common{
 		Workspace: ws,
 		Styles:    &s,
+		Mux:       mux.Detect(),
 	}
 }
 
