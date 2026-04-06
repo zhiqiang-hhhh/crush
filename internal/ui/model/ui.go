@@ -38,6 +38,7 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/charmbracelet/crush/internal/search"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
@@ -1763,6 +1764,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			break
 		}
 		cmds = append(cmds, m.runMCPPrompt(msg.ClientID, msg.PromptID, msg.Args))
+	case dialog.ActionOpenSearchResult:
+		m.dialog.CloseDialog(dialog.SessionSearchID)
+		cmds = append(cmds, m.openSearchResult(msg.SearchResult))
 	default:
 		cmds = append(cmds, util.CmdHandler(msg))
 	}
@@ -1826,6 +1830,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			return true
 		case key.Matches(msg, m.keyMap.Sessions):
 			if cmd := m.openSessionsDialog(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return true
+		case key.Matches(msg, m.keyMap.SessionSearch):
+			if cmd := m.openSessionSearchDialog(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 			return true
@@ -3462,6 +3471,10 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openFilesDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.SessionSearchID:
+		if cmd := m.openSessionSearchDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case dialog.QuitID:
 		if cmd := m.openQuitDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -3596,6 +3609,41 @@ func (m *UI) openSessionsDialog() tea.Cmd {
 
 	m.dialog.OpenDialog(dialog)
 	return nil
+}
+
+// openSessionSearchDialog opens the cross-project session search dialog.
+func (m *UI) openSessionSearchDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.SessionSearchID) {
+		m.dialog.BringToFront(dialog.SessionSearchID)
+		return nil
+	}
+	d := dialog.NewSessionSearch(m.com)
+	m.dialog.OpenDialog(d)
+	return d.InitialSearchCmd()
+}
+
+// openSearchResult opens a session from a cross-project search result.
+// If the session is already open in a mux pane, it switches to that pane.
+// Otherwise it opens the session in a new mux window.
+func (m *UI) openSearchResult(result search.SearchResult) tea.Cmd {
+	// If already open in a mux pane, switch to it
+	if result.Active && m.com.Mux.SelectPaneBySession(result.SessionID) {
+		return nil
+	}
+	// Open in a new mux window
+	return func() tea.Msg {
+		if !m.com.Mux.Available() {
+			return util.NewInfoMsg("Requires a terminal multiplexer (tmux/psmux)")
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return util.NewErrorMsg(err)
+		}
+		if err := m.com.Mux.NewWindow(result.AbsProjectPath, exe, "--session", result.SessionID); err != nil {
+			return util.NewErrorMsg(err)
+		}
+		return nil
+	}
 }
 
 // openFilesDialog opens the file picker dialog.

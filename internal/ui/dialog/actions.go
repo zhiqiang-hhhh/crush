@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/search"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/util"
@@ -97,6 +98,11 @@ type (
 	// When SessionID is empty, the handler should use the current session.
 	ActionForkSession struct {
 		SessionID string
+	}
+	// ActionOpenSearchResult is a message indicating a search result session
+	// has been selected for opening.
+	ActionOpenSearchResult struct {
+		search.SearchResult
 	}
 )
 
