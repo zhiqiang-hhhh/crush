@@ -90,7 +90,7 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 
-		sess, err := m.com.App.Sessions.Get(ctx, sessionID)
+		sess, err := m.com.Workspace.GetSession(ctx, sessionID)
 		if err != nil {
 			return util.ReportError(err)()
 		}
@@ -100,7 +100,7 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 			return util.ReportError(err)()
 		}
 
-		readFiles, err := m.com.App.FileTracker.ListReadFiles(ctx, sessionID)
+		readFiles, err := m.com.Workspace.FileTrackerListReadFiles(ctx, sessionID)
 		if err != nil {
 			slog.Error("Failed to load read files for session", "error", err)
 		}
@@ -298,7 +298,7 @@ func buildMessageItems(styles *styles.Styles, cfg *config.Config, msgs []message
 }
 
 func (m *UI) loadSessionFiles(sessionID string) ([]SessionFile, error) {
-	files, err := m.com.App.History.ListBySession(context.Background(), sessionID)
+	files, err := m.com.Workspace.ListSessionHistory(context.Background(), sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +450,7 @@ func (m *UI) startLSPs(paths []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
 		for _, path := range paths {
-			m.com.App.LSPManager.Start(ctx, path)
+			m.com.Workspace.LSPStart(ctx, path)
 		}
 		return nil
 	}

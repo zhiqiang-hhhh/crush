@@ -4,17 +4,17 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/logo"
 	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/charmbracelet/crush/internal/workspace"
 )
 
 // selectedLargeModel returns the currently selected large language model from
 // the agent coordinator, if one exists.
-func (m *UI) selectedLargeModel() *agent.Model {
-	if m.com.App.AgentCoordinator != nil {
-		model := m.com.App.AgentCoordinator.Model()
+func (m *UI) selectedLargeModel() *workspace.AgentModel {
+	if m.com.Workspace.AgentIsReady() {
+		model := m.com.Workspace.AgentModel()
 		return &model
 	}
 	return nil
@@ -34,7 +34,7 @@ func (m *UI) landingView(width int) string {
 		t.BgSubtle, t.BgOverlay,
 	)
 
-	cwd := common.PrettyPath(t, m.com.Store().WorkingDir(), width)
+	cwd := common.PrettyPath(t, m.com.Workspace.WorkingDir(), width)
 	modelInfo := m.modelInfo(width)
 
 	parts := []string{

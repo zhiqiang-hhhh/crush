@@ -8,8 +8,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/util"
@@ -18,7 +16,7 @@ import (
 // markProjectInitialized marks the current project as initialized in the config.
 func (m *UI) markProjectInitialized() tea.Msg {
 	// TODO: handle error so we show it in the tui footer
-	err := config.MarkProjectInitialized(m.com.Store())
+	err := m.com.Workspace.MarkProjectInitialized()
 	if err != nil {
 		slog.Error(err.Error())
 	}
@@ -51,12 +49,13 @@ func (m *UI) initializeProject() tea.Cmd {
 	if cmd := m.newSession(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
-	cfg := m.com.Store()
-
 	initialize := func() tea.Msg {
-		initPrompt, err := agent.InitializePrompt(cfg)
+		initPrompt, err := m.com.Workspace.InitializePrompt()
 		if err != nil {
-			return util.InfoMsg{Type: util.InfoTypeError, Msg: err.Error()}
+			return util.InfoMsg{
+				Type: util.InfoTypeError,
+				Msg:  fmt.Sprintf("Failed to initialize project: %v", err),
+			}
 		}
 		return sendMessageMsg{Content: initPrompt}
 	}
@@ -77,7 +76,7 @@ func (m *UI) skipInitializeProject() tea.Cmd {
 // initializeView renders the project initialization prompt content.
 func (m *UI) initializeView(width int) string {
 	s := m.com.Styles.Initialize
-	cwd := home.Short(m.com.Store().WorkingDir())
+	cwd := home.Short(m.com.Workspace.WorkingDir())
 	initFile := m.com.Config().Options.InitializeAs
 
 	header := s.Header.Render("Would you like to initialize this project?")

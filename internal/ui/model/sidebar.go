@@ -7,7 +7,6 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/logo"
 	"github.com/charmbracelet/crush/internal/ui/styles"
@@ -53,19 +52,13 @@ func (m *UI) modelInfo(width int) string {
 		}
 	}
 
-	parts := []string{
-		common.ModelInfo(m.com.Styles, model.CatwalkCfg.Name, providerName, reasoningInfo, modelContext, width),
+	var modelName string
+	if model != nil {
+		modelName = model.CatwalkCfg.Name
 	}
 
-	t := m.com.Styles
-	if coord := m.com.App.AgentCoordinator; coord != nil {
-		smallModel := coord.SmallModel()
-		parts = append(parts, m.compactModelLine(t, "Small", smallModel, width))
-
-		if _, ok := m.com.Config().Models[config.SelectedModelTypeSummary]; ok {
-			summaryModel := coord.SummaryModel()
-			parts = append(parts, m.compactModelLine(t, "Summary", summaryModel, width))
-		}
+	parts := []string{
+		common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width),
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -142,7 +135,7 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 	height := area.Dy()
 
 	title := t.Muted.Width(width).MaxHeight(2).Render(m.session.Title)
-	cwd := common.PrettyPath(t, m.com.Store().WorkingDir(), width)
+	cwd := common.PrettyPath(t, m.com.Workspace.WorkingDir(), width)
 	sidebarLogo := m.sidebarLogo
 	if height < logoHeightBreakpoint {
 		sidebarLogo = logo.SmallRender(m.com.Styles, width)
@@ -168,7 +161,7 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 
 	lspSection := m.lspInfo(width, maxLSPs, true)
 	mcpSection := m.mcpInfo(width, maxMCPs, true)
-	filesSection := m.filesInfo(m.com.Store().WorkingDir(), width, maxFiles, true)
+	filesSection := m.filesInfo(m.com.Workspace.WorkingDir(), width, maxFiles, true)
 
 	// Calculate MCP item positions for click handling.
 	headerH := lipgloss.Height(sidebarHeader)

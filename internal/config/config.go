@@ -226,7 +226,7 @@ func (c Completions) Limits() (depth, items int) {
 }
 
 type Permissions struct {
-	AllowedTools          []string `json:"allowed_tools,omitempty" jsonschema:"description=List of tools that don't require permission prompts,example=bash,example=view"`        // Tools that don't require permission prompts
+	AllowedTools          []string `json:"allowed_tools,omitempty" jsonschema:"description=List of tools that don't require permission prompts,example=bash,example=view"`
 	SkipRequests          bool     `json:"-"`                                                                                                                                     // Automatically accept all permissions (YOLO mode)
 	AutoApproveWorkingDir bool     `json:"auto_approve_working_dir,omitempty" jsonschema:"description=Auto-approve tool calls that operate within the current working directory"` // Auto-approve ops inside the working directory
 }
@@ -273,6 +273,7 @@ type Options struct {
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	DisableNotifications      bool         `json:"disable_notifications,omitempty" jsonschema:"description=Disable desktop notifications,default=false"`
 	AutoTitle                 bool         `json:"auto_title,omitempty" jsonschema:"description=Automatically update session title on every conversation turn using the small model,default=false"`
+	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
 }
 
 type MCPs map[string]MCPConfig

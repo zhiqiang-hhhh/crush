@@ -31,10 +31,10 @@ var (
 )
 
 // Internal ID management.
-var lastID int64
+var lastID atomic.Int64
 
 func nextID() int {
-	return int(atomic.AddInt64(&lastID, 1))
+	return int(lastID.Add(1))
 }
 
 // StepMsg is a message type used to trigger the next step in the animation.
