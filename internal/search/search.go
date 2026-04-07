@@ -271,7 +271,7 @@ func MarkActive(results []SearchResult, activeSessionIDs []string) {
 
 // Preview returns a message summary for a given session.
 // Each line is prefixed with "▶ " for user messages and "◀ " for assistant messages.
-// Limited to 50 messages, each truncated to 300 characters.
+// Newlines within messages are replaced with spaces.
 func Preview(dbPath, sessionID string) ([]string, error) {
 	conn, err := openReadOnly(dbPath)
 	if err != nil {
@@ -291,7 +291,7 @@ func Preview(dbPath, sessionID string) ([]string, error) {
 						json_extract(j.value, '$.data.text'), ''
 					),
 					char(10), ' '
-				), 1, 300
+				), 1, 2000
 			)
 		FROM messages m,
 			json_each(m.parts) j
@@ -301,7 +301,6 @@ func Preview(dbPath, sessionID string) ([]string, error) {
 			AND json_extract(j.value, '$.data.text') IS NOT NULL
 		GROUP BY m.id
 		ORDER BY m.created_at ASC
-		LIMIT 50
 	`, sessionID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("preview query: %w", err)

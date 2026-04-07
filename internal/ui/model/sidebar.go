@@ -4,10 +4,12 @@ import (
 	"cmp"
 	"fmt"
 	"image"
+	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent"
 	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/logo"
 	"github.com/charmbracelet/crush/internal/ui/styles"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -133,17 +135,26 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 	var title string
 	if m.session != nil {
 		title = t.Muted.Width(width).MaxHeight(2).Render(m.session.Title)
+		title += "\n" + t.Subtle.Width(width).Render(m.session.ID)
 	}
 	cwd := common.PrettyPath(t, m.com.Workspace.WorkingDir(), width)
 	sidebarLogo := m.sidebarLogo
 	if height < logoHeightBreakpoint {
 		sidebarLogo = logo.SmallRender(m.com.Styles, width)
 	}
+
+	// Selectable text block: title + id + cwd
+	textBlock := lipgloss.JoinVertical(lipgloss.Left, title, "", cwd)
+	textBlockH := lipgloss.Height(textBlock)
+	logoH := lipgloss.Height(sidebarLogo)
+
+	// Store the screen rect and rendered content for mouse selection.
+	m.sidebarTextRect = image.Rect(area.Min.X, area.Min.Y+logoH, area.Min.X+width, area.Min.Y+logoH+textBlockH)
+	m.sidebarTextContent = textBlock
+
 	blocks := []string{
 		sidebarLogo,
-		title,
-		"",
-		cwd,
+		textBlock,
 		"",
 		m.modelInfo(width),
 		"",
@@ -213,4 +224,47 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 			}
 		}
 	}
+
+	// Apply text selection highlight over the title/id/cwd area.
+	if m.sidebarHasSelect {
+		sL, sC, eL, eC := m.sidebarNormalizedSel()
+		selStyle := t.TextSelection
+		r := m.sidebarTextRect
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			line := y - r.Min.Y
+			for x := r.Min.X; x < r.Max.X; x++ {
+				col := x - r.Min.X
+				if (line > sL || (line == sL && col >= sC)) &&
+					(line < eL || (line == eL && col < eC)) {
+					if c := scr.CellAt(x, y); c != nil {
+						c.Style.Fg = selStyle.GetForeground()
+						c.Style.Bg = selStyle.GetBackground()
+					}
+				}
+			}
+		}
+	}
+}
+
+// sidebarNormalizedSel returns selection coordinates in normalized order.
+func (m *UI) sidebarNormalizedSel() (sL, sC, eL, eC int) {
+	sL, sC = m.sidebarSelStart[0], m.sidebarSelStart[1]
+	eL, eC = m.sidebarSelEnd[0], m.sidebarSelEnd[1]
+	if sL > eL || (sL == eL && sC > eC) {
+		sL, sC, eL, eC = eL, eC, sL, sC
+	}
+	return
+}
+
+// sidebarSelectedText extracts the selected plain text from the sidebar
+// title/id/cwd block.
+func (m *UI) sidebarSelectedText() string {
+	if m.sidebarTextContent == "" {
+		return ""
+	}
+	sL, sC, eL, eC := m.sidebarNormalizedSel()
+	w := m.sidebarTextRect.Dx()
+	h := m.sidebarTextRect.Dy()
+	area := image.Rect(0, 0, w, h)
+	return strings.TrimRight(list.HighlightContent(m.sidebarTextContent, area, sL, sC, eL, eC), "\n")
 }

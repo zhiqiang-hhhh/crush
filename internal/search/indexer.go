@@ -361,6 +361,7 @@ func toPinyinAndInitials(text string, args pinyin.Args) (string, string) {
 
 	runes := []rune(text)
 	i := 0
+	lastWasHan := false
 	for i < len(runes) {
 		r := runes[i]
 		if unicode.Is(unicode.Han, r) {
@@ -376,6 +377,7 @@ func toPinyinAndInitials(text string, args pinyin.Args) (string, string) {
 					initials = append(initials, syllable[0][0])
 				}
 			}
+			lastWasHan = true
 		} else {
 			start := i
 			for i < len(runes) && !unicode.Is(unicode.Han, runes[i]) {
@@ -383,6 +385,12 @@ func toPinyinAndInitials(text string, args pinyin.Args) (string, string) {
 			}
 			chunk := string(runes[start:i])
 			pyParts = append(pyParts, chunk)
+			// Insert a space separator in initials so that matches
+			// don't span across punctuation/whitespace boundaries.
+			if lastWasHan {
+				initials = append(initials, ' ')
+			}
+			lastWasHan = false
 		}
 	}
 

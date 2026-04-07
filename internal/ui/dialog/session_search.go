@@ -3,6 +3,7 @@ package dialog
 import (
 	"image"
 	"strings"
+	"unicode"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -15,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/util"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // SessionSearchID is the identifier for the session search dialog.
@@ -42,16 +44,21 @@ type SessionSearch struct {
 	loading bool
 
 	// preview state
-	preview    []string
-	previewSID string
+	preview      []string
+	previewSID   string
+	previewQuery string
+	previewRow   int            // vertical scroll offset (visual line index)
+	previewRect  image.Rectangle // screen area of preview pane (for mouse hit-test)
 
 	keyMap struct {
-		Select   key.Binding
-		Next     key.Binding
-		Previous key.Binding
-		UpDown   key.Binding
-		Delete   key.Binding
-		Close    key.Binding
+		Select      key.Binding
+		Next        key.Binding
+		Previous    key.Binding
+		UpDown      key.Binding
+		Delete      key.Binding
+		Close       key.Binding
+		PreviewUp   key.Binding
+		PreviewDown key.Binding
 	}
 }
 
@@ -94,6 +101,12 @@ func NewSessionSearch(com *common.Common) *SessionSearch {
 	s.keyMap.Delete = key.NewBinding(
 		key.WithKeys("ctrl+d"),
 		key.WithHelp("ctrl+d", "delete"),
+	)
+	s.keyMap.PreviewUp = key.NewBinding(
+		key.WithKeys("alt+up", "alt+k"),
+	)
+	s.keyMap.PreviewDown = key.NewBinding(
+		key.WithKeys("alt+down", "alt+j"),
 	)
 	s.keyMap.Close = CloseKey
 
@@ -146,6 +159,19 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 	case sessionPreviewMsg:
 		if msg.sessionID == s.previewSID {
 			s.preview = msg.lines
+			s.scrollPreviewToMatch()
+		}
+		return nil
+
+	case tea.MouseWheelMsg:
+		pt := image.Pt(msg.X, msg.Y)
+		if pt.In(s.previewRect) {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				s.previewRow = max(0, s.previewRow-3)
+			case tea.MouseWheelDown:
+				s.previewRow += 3
+			}
 		}
 		return nil
 
@@ -203,11 +229,19 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 			resultItem := item.(*SearchResultItem)
 			return ActionOpenSearchResult{resultItem.SearchResult}
 
+		case key.Matches(msg, s.keyMap.PreviewUp):
+			s.previewRow = max(0, s.previewRow-3)
+			return nil
+		case key.Matches(msg, s.keyMap.PreviewDown):
+			s.previewRow += 3
+			return nil
+
 		default:
 			var cmd tea.Cmd
 			s.input, cmd = s.input.Update(msg)
 			query := s.input.Value()
 			s.loading = true
+			s.previewQuery = query
 			return ActionCmd{tea.Batch(cmd, s.searchCmd(query))}
 		}
 	}
@@ -343,8 +377,8 @@ func (s *SessionSearch) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	uv.NewStyledString(leftView).Draw(scr, leftRect)
 
 	// Draw right
-	rightRect := image.Rect(startX+leftWidth, previewStartY, startX+leftWidth+rightWidth, previewStartY+previewH)
-	uv.NewStyledString(previewView).Draw(scr, rightRect)
+	s.previewRect = image.Rect(startX+leftWidth, previewStartY, startX+leftWidth+rightWidth, previewStartY+previewH)
+	uv.NewStyledString(previewView).Draw(scr, s.previewRect)
 
 	if cur != nil {
 		cur.X += startX
@@ -354,6 +388,9 @@ func (s *SessionSearch) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 }
 
 // buildPreview builds the preview panel with a rounded border.
+// Each message occupies one visual line. If a line has a token match,
+// it is truncated around the match so the match is visible. Lines
+// without a match are truncated from the start.
 func (s *SessionSearch) buildPreview(width, height int) string {
 	borderW := max(0, width-2)
 	borderH := max(0, height-2)
@@ -367,7 +404,298 @@ func (s *SessionSearch) buildPreview(width, height int) string {
 	if len(s.preview) == 0 {
 		return border.Render("")
 	}
-	return border.Render(strings.Join(s.preview, "\n"))
+
+	tokens := search.TokenizeQuery(s.previewQuery)
+	innerW := max(1, borderW-2)
+
+	// Clamp vertical scroll (one message = one line).
+	maxRow := max(0, len(s.preview)-borderH)
+	s.previewRow = max(0, min(s.previewRow, maxRow))
+
+	endLine := min(len(s.preview), s.previewRow+borderH)
+	visible := s.preview[s.previewRow:endLine]
+
+	var lines []string
+	for _, line := range visible {
+		cut := centerTruncate(line, innerW, tokens)
+		lines = append(lines, highlightLine(cut, tokens))
+	}
+
+	return border.Render(strings.Join(lines, "\n"))
+}
+
+// centerTruncate truncates a line to maxW display columns. If the line
+// contains a token match, the visible window is centered on the match.
+// Otherwise the line is truncated from the start.
+func centerTruncate(line string, maxW int, tokens []string) string {
+	lineW := ansi.StringWidth(line)
+	if lineW <= maxW {
+		return line
+	}
+
+	if len(tokens) == 0 {
+		return ansi.Truncate(line, maxW, "…")
+	}
+
+	// Find the display-column of the first match.
+	matchCol := findMatchColumn(line, tokens)
+	if matchCol < 0 {
+		return ansi.Truncate(line, maxW, "…")
+	}
+
+	// Center the match in the visible window.
+	half := maxW / 2
+	startCol := max(0, matchCol-half)
+
+	if startCol == 0 {
+		return ansi.Truncate(line, maxW, "…")
+	}
+
+	// Skip past startCol display columns.
+	runes := []rune(line)
+	col := 0
+	startRune := 0
+	for i, r := range runes {
+		if col >= startCol {
+			startRune = i
+			break
+		}
+		w := ansi.StringWidth(string(r))
+		col += w
+	}
+
+	tail := string(runes[startRune:])
+	return "…" + ansi.Truncate(tail, max(0, maxW-1), "…")
+}
+
+// findMatchColumn returns the display column of the first token match
+// in a line (direct text or per-run initials). Returns -1 if no match.
+func findMatchColumn(line string, tokens []string) int {
+	runes := []rune(line)
+	lower := []rune(strings.ToLower(string(runes)))
+
+	for _, token := range tokens {
+		tl := []rune(strings.ToLower(token))
+		for i := 0; i <= len(lower)-len(tl); i++ {
+			if string(lower[i:i+len(tl)]) == string(tl) {
+				return ansi.StringWidth(string(runes[:i]))
+			}
+		}
+	}
+
+	// Per contiguous Han run initials.
+	i := 0
+	for i < len(runes) {
+		if !unicode.Is(unicode.Han, runes[i]) {
+			i++
+			continue
+		}
+		runStart := i
+		type hanChar struct {
+			runeIdx int
+			initial byte
+		}
+		var hans []hanChar
+		for i < len(runes) && unicode.Is(unicode.Han, runes[i]) {
+			_, ini := search.ToPinyinAndInitials(string(runes[i]))
+			if len(ini) > 0 {
+				hans = append(hans, hanChar{runeIdx: i, initial: ini[0]})
+			}
+			i++
+		}
+		_ = runStart
+		for _, token := range tokens {
+			tl := strings.ToLower(token)
+			tLen := len(tl)
+			if tLen == 0 || len(hans) < tLen {
+				continue
+			}
+			for si := 0; si <= len(hans)-tLen; si++ {
+				match := true
+				for j := 0; j < tLen; j++ {
+					if strings.ToLower(string(hans[si+j].initial))[0] != tl[j] {
+						match = false
+						break
+					}
+				}
+				if match {
+					return ansi.StringWidth(string(runes[:hans[si].runeIdx]))
+				}
+			}
+		}
+	}
+
+	return -1
+}
+
+// scrollPreviewToMatch sets previewRow to the first message matching
+// the current query tokens. Called when preview data arrives.
+func (s *SessionSearch) scrollPreviewToMatch() {
+	tokens := search.TokenizeQuery(s.previewQuery)
+	if len(tokens) == 0 {
+		s.previewRow = 0
+		return
+	}
+	for i, line := range s.preview {
+		if lineMatchesAnyToken(line, tokens) {
+			s.previewRow = max(0, i-2)
+			return
+		}
+	}
+	s.previewRow = 0
+}
+
+// highlightLine highlights all occurrences of tokens in a line using dark gold.
+// It handles both direct text matches and pinyin matches for Chinese characters.
+// All token matches are collected into a rune-level highlight mask first,
+// then rendered in a single pass to avoid ANSI-offset corruption.
+func highlightLine(line string, tokens []string) string {
+	if len(tokens) == 0 {
+		return line
+	}
+
+	runes := []rune(line)
+	n := len(runes)
+	if n == 0 {
+		return line
+	}
+
+	hl := make([]bool, n)
+
+	for _, token := range tokens {
+		tokenLower := strings.ToLower(token)
+		if tokenLower == "" {
+			continue
+		}
+		markDirectMatches(runes, tokenLower, hl)
+		markPinyinMatches(runes, tokenLower, hl)
+	}
+
+	highlightStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#DAA520")).Bold(true)
+
+	var result strings.Builder
+	i := 0
+	for i < n {
+		if !hl[i] {
+			j := i
+			for j < n && !hl[j] {
+				j++
+			}
+			result.WriteString(string(runes[i:j]))
+			i = j
+		} else {
+			j := i
+			for j < n && hl[j] {
+				j++
+			}
+			result.WriteString(highlightStyle.Render(string(runes[i:j])))
+			i = j
+		}
+	}
+	return result.String()
+}
+
+// markDirectMatches marks rune positions that match the token as a substring
+// (case-insensitive) in the rune slice.
+func markDirectMatches(runes []rune, tokenLower string, hl []bool) {
+	lineLower := strings.ToLower(string(runes))
+	lineRunes := []rune(lineLower)
+	tokenRunes := []rune(tokenLower)
+	tLen := len(tokenRunes)
+
+	for i := 0; i <= len(lineRunes)-tLen; i++ {
+		if string(lineRunes[i:i+tLen]) == tokenLower {
+			for k := i; k < i+tLen; k++ {
+				hl[k] = true
+			}
+		}
+	}
+}
+
+// markPinyinMatches finds contiguous Chinese character runs, computes
+// their pinyin initials, and highlights matching characters. Punctuation
+// between Han characters breaks the run (matching the index behavior).
+func markPinyinMatches(runes []rune, tokenLower string, hl []bool) {
+	tLen := len(tokenLower)
+	if tLen == 0 {
+		return
+	}
+
+	i := 0
+	for i < len(runes) {
+		if !unicode.Is(unicode.Han, runes[i]) {
+			i++
+			continue
+		}
+		// Collect a contiguous Han run.
+		start := i
+		type hanChar struct {
+			runeIdx int
+			initial byte
+		}
+		var hans []hanChar
+		for i < len(runes) && unicode.Is(unicode.Han, runes[i]) {
+			_, ini := search.ToPinyinAndInitials(string(runes[i]))
+			if len(ini) > 0 {
+				hans = append(hans, hanChar{runeIdx: i, initial: ini[0]})
+			}
+			i++
+		}
+		_ = start
+
+		// Sliding window over this run's initials.
+		for si := 0; si <= len(hans)-tLen; si++ {
+			match := true
+			for j := 0; j < tLen; j++ {
+				if strings.ToLower(string(hans[si+j].initial))[0] != tokenLower[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				for j := 0; j < tLen; j++ {
+					hl[hans[si+j].runeIdx] = true
+				}
+			}
+		}
+	}
+}
+
+// lineMatchesAnyToken checks if a line contains any of the tokens
+// via direct text or per-run pinyin initials (case-insensitive).
+// Punctuation breaks Han runs, matching the FTS5 index behavior.
+func lineMatchesAnyToken(line string, tokens []string) bool {
+	lineLower := strings.ToLower(line)
+	for _, token := range tokens {
+		if strings.Contains(lineLower, strings.ToLower(token)) {
+			return true
+		}
+	}
+
+	// Per contiguous Han run: collect initials, check substring.
+	runes := []rune(line)
+	i := 0
+	for i < len(runes) {
+		if !unicode.Is(unicode.Han, runes[i]) {
+			i++
+			continue
+		}
+		var initials []byte
+		for i < len(runes) && unicode.Is(unicode.Han, runes[i]) {
+			_, ini := search.ToPinyinAndInitials(string(runes[i]))
+			if len(ini) > 0 {
+				initials = append(initials, ini[0])
+			}
+			i++
+		}
+		iniLower := strings.ToLower(string(initials))
+		for _, token := range tokens {
+			if strings.Contains(iniLower, strings.ToLower(token)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ShortHelp implements [help.KeyMap].

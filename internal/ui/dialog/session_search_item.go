@@ -71,18 +71,18 @@ func (s *SearchResultItem) Render(width int) string {
 		return line1
 	}
 
-	// Line 2: project path, truncated, with same padding as itemStyle
+	// Line 2: project path
 	itemStyle := st.ItemBlurred
 	if s.focused {
 		itemStyle = st.ItemFocused
 	}
 	innerWidth := max(0, width-itemStyle.GetHorizontalFrameSize())
-	path := ansi.Truncate(s.ProjectPath, innerWidth, "…")
-	// Use the item style but with subtle foreground for the path line
 	pathStyle := lipgloss.NewStyle().
 		Foreground(s.t.Subtle.GetForeground()).
 		PaddingLeft(itemStyle.GetPaddingLeft()).
 		PaddingRight(itemStyle.GetPaddingRight())
+
+	path := ansi.Truncate(s.ProjectPath, innerWidth, "…")
 	line2 := pathStyle.Render(path)
 
 	return line1 + "\n" + line2
