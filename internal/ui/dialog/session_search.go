@@ -1,10 +1,14 @@
 package dialog
 
 import (
+	"image"
+	"strings"
+
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/projects"
 	"github.com/charmbracelet/crush/internal/search"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -22,6 +26,12 @@ type sessionSearchResultMsg struct {
 	err     error
 }
 
+// sessionPreviewMsg carries preview lines for a session.
+type sessionPreviewMsg struct {
+	sessionID string
+	lines     []string
+}
+
 // SessionSearch is a cross-project session search dialog.
 type SessionSearch struct {
 	com     *common.Common
@@ -30,6 +40,10 @@ type SessionSearch struct {
 	input   textinput.Model
 	results []search.SearchResult
 	loading bool
+
+	// preview state
+	preview    []string
+	previewSID string
 
 	keyMap struct {
 		Select   key.Binding
@@ -125,6 +139,14 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 		s.list.SetItems(searchResultItems(s.com.Styles, s.results...)...)
 		s.list.SelectFirst()
 		s.list.ScrollToTop()
+		s.preview = nil
+		s.previewSID = ""
+		return ActionCmd{s.loadPreviewCmd()}
+
+	case sessionPreviewMsg:
+		if msg.sessionID == s.previewSID {
+			s.preview = msg.lines
+		}
 		return nil
 
 	case tea.KeyPressMsg:
@@ -147,7 +169,11 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 			if s.list.Len() > 0 {
 				s.list.SetSelected(min(idx, s.list.Len()-1))
 			}
-			return ActionCmd{s.deleteSessionCmd(resultItem.DBPath, resultItem.ID())}
+			s.previewSID = ""
+			return ActionCmd{tea.Batch(
+				s.deleteSessionCmd(resultItem.DBPath, resultItem.ID()),
+				s.loadPreviewCmd(),
+			)}
 
 		case key.Matches(msg, s.keyMap.Previous):
 			s.list.Focus()
@@ -157,6 +183,7 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 				s.list.SelectPrev()
 			}
 			s.list.ScrollToSelected()
+			return ActionCmd{s.loadPreviewCmd()}
 
 		case key.Matches(msg, s.keyMap.Next):
 			s.list.Focus()
@@ -166,6 +193,7 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 				s.list.SelectNext()
 			}
 			s.list.ScrollToSelected()
+			return ActionCmd{s.loadPreviewCmd()}
 
 		case key.Matches(msg, s.keyMap.Select):
 			item := s.list.SelectedItem()
@@ -184,6 +212,26 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 		}
 	}
 	return nil
+}
+
+// loadPreviewCmd loads the preview for the currently selected session.
+func (s *SessionSearch) loadPreviewCmd() tea.Cmd {
+	item := s.list.SelectedItem()
+	if item == nil {
+		s.preview = nil
+		return nil
+	}
+	resultItem := item.(*SearchResultItem)
+	sid := resultItem.SessionID
+	dbPath := resultItem.DBPath
+	if sid == s.previewSID {
+		return nil
+	}
+	s.previewSID = sid
+	return func() tea.Msg {
+		lines, _ := search.Preview(dbPath, sid)
+		return sessionPreviewMsg{sessionID: sid, lines: lines}
+	}
 }
 
 // searchCmd returns a tea.Cmd that performs the search in the background.
@@ -241,33 +289,85 @@ func (s *SessionSearch) Cursor() *tea.Cursor {
 }
 
 // Draw implements [Dialog].
+// Left panel: standard dialog (RenderContext). Right panel: preview.
+// Both drawn directly to uv.Screen so preview content is auto-clipped.
 func (s *SessionSearch) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := s.com.Styles
-	width := max(0, min(defaultDialogMaxWidth, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
-	height := max(0, min(defaultDialogHeight, area.Dy()-t.Dialog.View.GetVerticalBorderSize()))
-	innerWidth := width - t.Dialog.View.GetHorizontalFrameSize()
+
+	// Align left edge to chat content area.
+	chatArea := s.com.ChatArea
+	startX := chatArea.Min.X
+	if startX <= area.Min.X {
+		startX = area.Min.X + area.Dx()/4
+	}
+	availW := area.Max.X - startX - 1
+
+	// Left panel: standard dialog layout
+	leftWidth := max(0, min(defaultDialogMaxWidth, availW-t.Dialog.View.GetHorizontalBorderSize()))
+	dialogWidth := leftWidth
+	innerWidth := dialogWidth - t.Dialog.View.GetHorizontalFrameSize()
+
+	// Left panel height: standard dialog height
+	totalHeight := max(0, min(defaultDialogHeight, area.Dy()-4))
 	heightOffset := t.Dialog.Title.GetVerticalFrameSize() + titleContentHeight +
 		t.Dialog.InputPrompt.GetVerticalFrameSize() + inputContentHeight +
 		t.Dialog.HelpView.GetVerticalFrameSize() +
 		t.Dialog.View.GetVerticalFrameSize()
+
 	s.input.SetWidth(max(0, innerWidth-t.Dialog.InputPrompt.GetHorizontalFrameSize()-1))
-	s.list.SetSize(innerWidth, height-heightOffset)
+	s.list.SetSize(innerWidth, totalHeight-heightOffset)
 	s.help.SetWidth(innerWidth)
 
 	cur := s.Cursor()
-	rc := NewRenderContext(t, width)
+	rc := NewRenderContext(t, dialogWidth)
 	rc.Title = "Search Sessions"
-
-	inputView := t.Dialog.InputPrompt.Render(s.input.View())
-	rc.AddPart(inputView)
-
-	listView := t.Dialog.List.Height(s.list.Height()).Render(s.list.Render())
-	rc.AddPart(listView)
+	rc.AddPart(t.Dialog.InputPrompt.Render(s.input.View()))
+	rc.AddPart(t.Dialog.List.Height(s.list.Height()).Render(s.list.Render()))
 	rc.Help = s.help.View(s)
+	leftView := rc.Render()
+	_, leftH := lipgloss.Size(leftView)
 
-	view := rc.Render()
-	DrawCenterCursor(scr, area, view, cur)
+	// Preview: taller than left panel, fill vertical space with top margin
+	const previewTopMargin = 5
+	previewH := max(leftH, area.Dy()-4-previewTopMargin)
+	rightWidth := max(0, availW-leftWidth)
+	previewView := s.buildPreview(rightWidth, previewH)
+
+	// Preview: top pushed down by margin, bottom anchored near screen bottom
+	previewStartY := area.Min.Y + previewTopMargin + max(0, (area.Dy()-previewTopMargin-previewH)/2)
+	// Left panel centered within the preview height
+	leftStartY := previewStartY + max(0, (previewH-leftH)/2)
+
+	// Draw left
+	leftRect := image.Rect(startX, leftStartY, startX+leftWidth, leftStartY+leftH)
+	uv.NewStyledString(leftView).Draw(scr, leftRect)
+
+	// Draw right
+	rightRect := image.Rect(startX+leftWidth, previewStartY, startX+leftWidth+rightWidth, previewStartY+previewH)
+	uv.NewStyledString(previewView).Draw(scr, rightRect)
+
+	if cur != nil {
+		cur.X += startX
+		cur.Y += leftStartY
+	}
 	return cur
+}
+
+// buildPreview builds the preview panel with a rounded border.
+func (s *SessionSearch) buildPreview(width, height int) string {
+	borderW := max(0, width-2)
+	borderH := max(0, height-2)
+
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(s.com.Styles.Subtle.GetForeground()).
+		Width(borderW).
+		Height(borderH)
+
+	if len(s.preview) == 0 {
+		return border.Render("")
+	}
+	return border.Render(strings.Join(s.preview, "\n"))
 }
 
 // ShortHelp implements [help.KeyMap].
