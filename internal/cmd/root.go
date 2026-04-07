@@ -30,6 +30,7 @@ import (
 	crushlog "github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/projects"
 	"github.com/charmbracelet/crush/internal/proto"
+	"github.com/charmbracelet/crush/internal/search"
 	"github.com/charmbracelet/crush/internal/server"
 	"github.com/charmbracelet/crush/internal/session"
 	"github.com/charmbracelet/crush/internal/ui/common"
@@ -54,6 +55,7 @@ func init() {
 	rootCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	rootCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+	rootCmd.Flags().Bool("no-tmux", false, "Don't auto-start a tmux/psmux session")
 	rootCmd.MarkFlagsMutuallyExclusive("session", "continue")
 
 	rootCmd.AddCommand(
@@ -99,8 +101,35 @@ crush --session {session-id}
 crush --continue
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		noTmux, _ := cmd.Flags().GetBool("no-tmux")
+		if !noTmux && shouldAutoTmux() {
+			// Re-exec into a dedicated tmux/psmux session.
+			// Build the inner crush command args, passing through the
+			// user's original flags and defaulting to --continue.
+			innerArgs := buildInnerTmuxArgs(cmd)
+			if err := execIntoTmux(innerArgs); err != nil {
+				slog.Warn("Failed to auto-start tmux, continuing without it", "error", err)
+			}
+		}
+
 		sessionID, _ := cmd.Flags().GetString("session")
 		continueLast, _ := cmd.Flags().GetBool("continue")
+
+		// When --continue is requested, resolve the globally most recent
+		// session across all projects *before* initializing the workspace.
+		// This ensures the workspace is created for the correct project dir.
+		if continueLast && sessionID == "" {
+			if best, ok := resolveGlobalLatestSession(); ok {
+				cwd, _ := os.Getwd()
+				if best.AbsProjectPath != cwd {
+					if err := os.Chdir(best.AbsProjectPath); err == nil {
+						_ = cmd.Flags().Set("cwd", best.AbsProjectPath)
+					}
+				}
+				sessionID = best.SessionID
+				continueLast = false
+			}
+		}
 
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {
@@ -620,3 +649,28 @@ var oldGitIgnore string
 
 //go:embed gitignore/default
 var defaultGitIgnore string
+
+// resolveGlobalLatestSession finds the most recently updated session
+// across all registered projects.
+func resolveGlobalLatestSession() (search.SearchResult, bool) {
+	projs, err := projects.List()
+	if err != nil || len(projs) == 0 {
+		return search.SearchResult{}, false
+	}
+	var searchProjs []search.Project
+	for _, p := range projs {
+		searchProjs = append(searchProjs, search.Project{Path: p.Path, DataDir: p.DataDir})
+	}
+	results, err := search.Search(searchProjs, "")
+	if err != nil || len(results) == 0 {
+		return search.SearchResult{}, false
+	}
+	// Find the one with the highest UpdatedAt.
+	best := results[0]
+	for _, r := range results[1:] {
+		if r.UpdatedAt > best.UpdatedAt {
+			best = r
+		}
+	}
+	return best, true
+}
