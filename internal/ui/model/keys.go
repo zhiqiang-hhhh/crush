@@ -103,11 +103,11 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+s", "sessions"),
 		),
 		SessionSearch: key.NewBinding(
-			key.WithKeys("alt+shift+s", "alt+S"),
+			key.WithKeys("alt+shift+s", "alt+S", "shift+f4"),
 			key.WithHelp("alt+S", "search sessions"),
 		),
 		OpenDirectory: key.NewBinding(
-			key.WithKeys("alt+shift+g", "alt+G"),
+			key.WithKeys("alt+shift+g", "alt+G", "alt+g"),
 			key.WithHelp("alt+G", "open directory"),
 		),
 		YoloMode: key.NewBinding(

@@ -1620,6 +1620,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionRefreshCopilotModels:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.refreshCopilotModels())
+	case dialog.ActionNewWindow:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.openNewMuxWindow())
 	case dialog.ActionToggleMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.toggleMCP(msg.Name, msg.Disable))

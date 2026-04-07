@@ -91,6 +91,8 @@ type (
 	ActionDisableDockerMCP struct{}
 	// ActionRefreshCopilotModels refreshes the Copilot token and model list.
 	ActionRefreshCopilotModels struct{}
+	// ActionNewWindow opens a new mux window.
+	ActionNewWindow struct{}
 	// ActionToggleMCP is a message to enable or disable a specific MCP server.
 	ActionToggleMCP struct {
 		Name    string

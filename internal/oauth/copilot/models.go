@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"charm.land/catwalk/pkg/catwalk"
 )
 
 const modelsURL = "https://api.githubcopilot.com/models"
@@ -30,16 +32,6 @@ type apiModel struct {
 
 type modelsResponse struct {
 	Data []apiModel `json:"data"`
-}
-
-// Model represents a Copilot model suitable for crush configuration.
-type Model struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	ContextWindow    int    `json:"context_window"`
-	DefaultMaxTokens int    `json:"default_max_tokens"`
-	CanReason        bool   `json:"can_reason,omitempty"`
-	SupportsImages   bool   `json:"supports_images,omitempty"`
 }
 
 var allowedVendors = map[string]bool{
@@ -68,7 +60,7 @@ func isReasoningModel(id string) bool {
 // FetchModels fetches the available model list from the Copilot API
 // using the given Copilot bearer token, and returns only chat models
 // from allowed vendors (Anthropic, OpenAI, Google).
-func FetchModels(ctx context.Context, copilotToken string) ([]Model, error) {
+func FetchModels(ctx context.Context, copilotToken string) ([]catwalk.Model, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
 	if err != nil {
 		return nil, err
@@ -98,16 +90,16 @@ func FetchModels(ctx context.Context, copilotToken string) ([]Model, error) {
 		return nil, fmt.Errorf("failed to decode models response: %w", err)
 	}
 
-	var models []Model
+	var models []catwalk.Model
 	for _, m := range mr.Data {
 		if !allowedVendors[m.Vendor] || m.Capabilities.Type != "chat" {
 			continue
 		}
-		cm := Model{
+		cm := catwalk.Model{
 			ID:               m.ID,
 			Name:             m.Name,
-			ContextWindow:    m.Capabilities.Limits.MaxContextWindowTokens,
-			DefaultMaxTokens: m.Capabilities.Limits.MaxOutputTokens,
+			ContextWindow:    int64(m.Capabilities.Limits.MaxContextWindowTokens),
+			DefaultMaxTokens: int64(m.Capabilities.Limits.MaxOutputTokens),
 			SupportsImages:   m.Capabilities.Supports.Vision,
 		}
 		if isReasoningModel(m.ID) {

@@ -214,11 +214,13 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 			fmt.Sprintf("providers.%s.api_key", providerID): v.AccessToken,
 			fmt.Sprintf("providers.%s.oauth", providerID):   v,
 		}
+		var fetchedModels []catwalk.Model
 		if providerID == string(catwalk.InferenceProviderCopilot) {
 			if models, err := copilot.FetchModels(context.Background(), v.AccessToken); err != nil {
 				slog.Warn("Failed to sync Copilot models on login", "error", err)
 			} else if len(models) > 0 {
 				fields["providers.copilot.models"] = models
+				fetchedModels = models
 				slog.Info("Synced Copilot models on login", "count", len(models))
 			}
 		}
@@ -228,6 +230,9 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 		setKeyOrToken = func() {
 			providerConfig.APIKey = v.AccessToken
 			providerConfig.OAuthToken = v
+			if len(fetchedModels) > 0 {
+				providerConfig.Models = fetchedModels
+			}
 			switch providerID {
 			case string(catwalk.InferenceProviderCopilot):
 				providerConfig.SetupGitHubCopilot()
@@ -356,8 +361,6 @@ func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, provid
 		providerConfig.SetupGitHubCopilot()
 	}
 
-	s.config.Providers.Set(providerID, providerConfig)
-
 	// Persist token and optionally models in a single write.
 	fields := map[string]any{
 		fmt.Sprintf("providers.%s.api_key", providerID): newToken.AccessToken,
@@ -370,9 +373,12 @@ func (s *ConfigStore) RefreshOAuthToken(ctx context.Context, scope Scope, provid
 			slog.Warn("Failed to sync Copilot models", "error", err)
 		} else if len(models) > 0 {
 			fields["providers.copilot.models"] = models
+			providerConfig.Models = models
 			slog.Info("Synced Copilot models", "count", len(models))
 		}
 	}
+
+	s.config.Providers.Set(providerID, providerConfig)
 
 	if err := s.SetConfigFields(scope, fields); err != nil {
 		return fmt.Errorf("failed to persist refreshed token: %w", err)

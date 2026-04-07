@@ -426,6 +426,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}),
 		NewCommandItem(c.com.Styles, "search_sessions", "Search All Sessions", "alt+S", ActionOpenDialog{SessionSearchID}),
 		NewCommandItem(c.com.Styles, "open_directory", "Open Directory", "alt+G", ActionOpenDialog{OpenDirectoryID}),
+		NewCommandItem(c.com.Styles, "new_window", "New Window", "alt+C", ActionNewWindow{}),
 		NewCommandItem(c.com.Styles, "switch_model", "Switch Model", "alt+m", ActionOpenDialog{ModelsID}),
 	}
 

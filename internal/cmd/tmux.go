@@ -5,8 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -57,9 +55,6 @@ func shouldAutoTmux() bool {
 	}
 	if os.Getenv("CRUSH_NO_TMUX") != "" {
 		return false
-	}
-	if runtime.GOOS == "windows" {
-		return findMux() != ""
 	}
 	return findMux() != ""
 }

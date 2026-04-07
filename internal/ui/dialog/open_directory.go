@@ -2,6 +2,7 @@ package dialog
 
 import (
 	"os"
+	"path/filepath"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -167,25 +168,11 @@ func baseName(path string) string {
 	if path == "" {
 		return ""
 	}
-	// If ends with separator, no partial name
 	last := path[len(path)-1]
 	if last == '/' || last == '\\' {
 		return ""
 	}
-	return path[len(path)-len(removeTrailingSep(path))+len(removeLastComponent(removeTrailingSep(path))):]
-}
-
-func removeTrailingSep(s string) string {
-	return s
-}
-
-func removeLastComponent(s string) string {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '/' || s[i] == '\\' {
-			return s[:i+1]
-		}
-	}
-	return ""
+	return filepath.Base(path)
 }
 
 func (d *OpenDirectory) Cursor() *tea.Cursor {
