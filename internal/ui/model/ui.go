@@ -41,6 +41,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/search"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/update"
 	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
 	"github.com/charmbracelet/crush/internal/ui/chat"
@@ -273,6 +274,7 @@ type UI struct {
 	// Notification state
 	notifyBackend       notification.Backend
 	notifyWindowFocused bool
+	updateAvailable     *app.UpdateAvailableMsg
 	// custom commands & mcp commands
 	customCommands []commands.CustomCommand
 	mcpPrompts     []commands.MCPPrompt
@@ -569,7 +571,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.notifyWindowFocused = false
 	case app.UpdateAvailableMsg:
-		cmds = append(cmds, util.ReportInfo(fmt.Sprintf("Update available: %s → %s", msg.CurrentVersion, msg.LatestVersion)))
+		m.updateAvailable = &msg
+		cmds = append(cmds, util.ReportInfo(fmt.Sprintf("Update available: %s → %s (use Ctrl+P → Update Crush)", msg.CurrentVersion, msg.LatestVersion)))
 	case pubsub.Event[notify.Notification]:
 		if cmd := m.handleAgentNotification(msg.Payload); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1626,6 +1629,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionNewWindow:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.openNewMuxWindow())
+	case dialog.ActionSelfUpdate:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		cmds = append(cmds, m.selfUpdate())
 	case dialog.ActionToggleMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.toggleMCP(msg.Name, msg.Disable))
@@ -4273,6 +4279,18 @@ func (m *UI) refreshCopilotModels() tea.Cmd {
 			return util.ReportError(err)()
 		}
 		return util.NewInfoMsg("Copilot token and models refreshed")
+	}
+}
+
+func (m *UI) selfUpdate() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		newVersion, err := update.SelfUpdate(ctx)
+		if err != nil {
+			return util.ReportError(err)()
+		}
+		return util.NewInfoMsg(fmt.Sprintf("Updated to %s — restart crush to use the new version", newVersion))
 	}
 }
 

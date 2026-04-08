@@ -272,6 +272,7 @@ type Options struct {
 	AutoLSP                   *bool        `json:"auto_lsp,omitempty" jsonschema:"description=Automatically setup LSPs based on root markers,default=true"`
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	DisableNotifications      bool         `json:"disable_notifications,omitempty" jsonschema:"description=Disable desktop notifications,default=false"`
+	DisableUpdateCheck        bool         `json:"disable_update_check,omitempty" jsonschema:"description=Disable automatic update checks on startup,default=false"`
 	AutoTitle                 bool         `json:"auto_title,omitempty" jsonschema:"description=Automatically update session title on every conversation turn using the small model,default=false"`
 	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
 }

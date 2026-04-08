@@ -93,6 +93,8 @@ type (
 	ActionRefreshCopilotModels struct{}
 	// ActionNewWindow opens a new mux window.
 	ActionNewWindow struct{}
+	// ActionSelfUpdate triggers a self-update of the crush binary.
+	ActionSelfUpdate struct{}
 	// ActionToggleMCP is a message to enable or disable a specific MCP server.
 	ActionToggleMCP struct {
 		Name    string
