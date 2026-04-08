@@ -170,31 +170,35 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 	workingDir := cmp.Or(p.workingDir, store.WorkingDir())
 	platform := cmp.Or(p.platform, runtime.GOOS)
 
-	files := map[string][]ContextFile{}
+	// seen tracks absolute paths we have already loaded so the same file
+	// is never included twice (e.g. global AGENTS.md discovered both via
+	// the global scan and via an explicit context_paths entry).
+	seen := map[string]bool{}
+	var contextFiles []ContextFile
 
-	// Load global context files first (lowest priority). These come from
-	// ~/.config/crush/ (or XDG/env overrides). Project-level files with
-	// the same base name will override these via the dedup map.
+	// Load global context files first.
 	globalDir := config.GlobalContextDir()
 	for _, name := range config.GlobalContextFileNames() {
 		fullPath := filepath.Join(globalDir, name)
-		pathKey := strings.ToLower(name)
-		if _, ok := files[pathKey]; ok {
+		if seen[fullPath] {
 			continue
 		}
 		if result := processFile(fullPath); result != nil {
-			files[pathKey] = []ContextFile{*result}
+			seen[fullPath] = true
+			contextFiles = append(contextFiles, *result)
 		}
 	}
 
-	// Load project-level context paths (higher priority, overwrites global).
+	// Load project-level context paths (both coexist with global).
 	cfg := store.Config()
 	for _, pth := range cfg.Options.ContextPaths {
 		expanded := expandPath(pth, store)
-		pathKey := strings.ToLower(filepath.Base(expanded))
-		content := processContextPath(expanded, store)
-		if len(content) > 0 {
-			files[pathKey] = content
+		for _, cf := range processContextPath(expanded, store) {
+			if seen[cf.Path] {
+				continue
+			}
+			seen[cf.Path] = true
+			contextFiles = append(contextFiles, cf)
 		}
 	}
 
@@ -254,9 +258,7 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		}
 	}
 
-	for _, contextFiles := range files {
-		data.ContextFiles = append(data.ContextFiles, contextFiles...)
-	}
+	data.ContextFiles = contextFiles
 	return data, nil
 }
 
