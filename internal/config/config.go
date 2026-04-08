@@ -276,6 +276,7 @@ type Options struct {
 	DisableUpdateCheck        bool         `json:"disable_update_check,omitempty" jsonschema:"description=Disable automatic update checks on startup,default=false"`
 	AutoTitle                 bool         `json:"auto_title,omitempty" jsonschema:"description=Automatically update session title on every conversation turn using the small model,default=false"`
 	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
+	Yolo                      bool         `json:"yolo,omitempty" jsonschema:"description=Automatically accept all permission requests (dangerous),default=false"`
 }
 
 type MCPs map[string]MCPConfig
