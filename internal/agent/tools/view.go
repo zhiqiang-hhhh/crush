@@ -64,6 +64,7 @@ func NewViewTool(
 	lspManager *lsp.Manager,
 	permissions permission.Service,
 	filetracker filetracker.Service,
+	skillTracker *skills.Tracker,
 	workingDir string,
 	skillsPaths ...string,
 ) fantasy.AgentTool {
@@ -77,7 +78,8 @@ func NewViewTool(
 
 			// Handle builtin skill files (crush: prefix).
 			if strings.HasPrefix(params.FilePath, skills.BuiltinPrefix) {
-				return readBuiltinFile(params)
+				resp, err := readBuiltinFile(params, skillTracker)
+				return resp, err
 			}
 
 			// Handle relative paths
@@ -245,6 +247,7 @@ func NewViewTool(
 					meta.ResourceType = ViewResourceSkill
 					meta.ResourceName = skill.Name
 					meta.ResourceDescription = skill.Description
+					skillTracker.MarkLoaded(skill.Name)
 				}
 			}
 
@@ -404,7 +407,7 @@ func isInSkillsPath(filePath string, skillsPaths []string) bool {
 }
 
 // readBuiltinFile reads a file from the embedded builtin skills filesystem.
-func readBuiltinFile(params ViewParams) (fantasy.ToolResponse, error) {
+func readBuiltinFile(params ViewParams, skillTracker *skills.Tracker) (fantasy.ToolResponse, error) {
 	embeddedPath := "builtin/" + strings.TrimPrefix(params.FilePath, skills.BuiltinPrefix)
 	builtinFS := skills.BuiltinFS()
 
@@ -448,6 +451,7 @@ func readBuiltinFile(params ViewParams) (fantasy.ToolResponse, error) {
 		meta.ResourceType = ViewResourceSkill
 		meta.ResourceName = skill.Name
 		meta.ResourceDescription = skill.Description
+		skillTracker.MarkLoaded(skill.Name)
 	}
 
 	return fantasy.WithResponseMetadata(

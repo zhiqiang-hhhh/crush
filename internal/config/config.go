@@ -505,6 +505,8 @@ func allToolNames() []string {
 		"agent",
 		"worker",
 		"bash",
+		"crush_info",
+		"crush_logs",
 		"job_output",
 		"job_kill",
 		"download",

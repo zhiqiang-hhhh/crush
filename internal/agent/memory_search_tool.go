@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/skills"
 )
 
 //go:embed templates/memory_search.md
@@ -82,7 +83,7 @@ func (c *coordinator) memorySearchTool(_ context.Context) (fantasy.AgentTool, er
 			searchTools := []fantasy.AgentTool{
 				tools.NewGlobTool(transcriptDir),
 				tools.NewGrepTool(transcriptDir, config.ToolGrep{}),
-				tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, transcriptDir),
+				tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, (*skills.Tracker)(nil), transcriptDir),
 			}
 
 			agent := NewSessionAgent(SessionAgentOptions{

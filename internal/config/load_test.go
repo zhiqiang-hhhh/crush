@@ -490,7 +490,7 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
 
-	assert.Equal(t, []string{"agent", "worker", "bash", "job_output", "job_kill", "multiedit", "fetch", "agentic_fetch", "glob", "ls", "sourcegraph", "todos", "view", "write", "web_search", "diff", "list_mcp_resources", "read_mcp_resource", "memory_search"}, coderAgent.AllowedTools)
+	assert.Equal(t, []string{"agent", "worker", "bash", "crush_info", "crush_logs", "job_output", "job_kill", "multiedit", "fetch", "agentic_fetch", "glob", "ls", "sourcegraph", "todos", "view", "write", "web_search", "diff", "list_mcp_resources", "read_mcp_resource", "memory_search"}, coderAgent.AllowedTools)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
@@ -517,7 +517,7 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 	cfg.SetupAgents()
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
-	assert.Equal(t, []string{"agent", "worker", "bash", "job_output", "job_kill", "download", "edit", "multiedit", "fetch", "agentic_fetch", "todos", "write", "web_search", "diff", "list_mcp_resources", "read_mcp_resource", "memory_search"}, coderAgent.AllowedTools)
+	assert.Equal(t, []string{"agent", "worker", "bash", "crush_info", "crush_logs", "job_output", "job_kill", "download", "edit", "multiedit", "fetch", "agentic_fetch", "todos", "write", "web_search", "diff", "list_mcp_resources", "read_mcp_resource", "memory_search"}, coderAgent.AllowedTools)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
@@ -1314,6 +1314,49 @@ func TestConfig_setDefaultsDisableDefaultProvidersEnvVar(t *testing.T) {
 }
 
 func TestConfig_configureSelectedModels(t *testing.T) {
+	t.Run("reload mode should not persist fallback defaults", func(t *testing.T) {
+		dir := t.TempDir()
+		globalPath := filepath.Join(dir, "crush.json")
+		require.NoError(t, os.WriteFile(globalPath, []byte(`{"models":{"large":{"provider":"ghost","model":"missing"}}}`), 0o600))
+
+		knownProviders := []catwalk.Provider{
+			{
+				ID:                  "openai",
+				APIKey:              "abc",
+				DefaultLargeModelID: "large-model",
+				DefaultSmallModelID: "small-model",
+				Models: []catwalk.Model{
+					{ID: "large-model", DefaultMaxTokens: 1000},
+					{ID: "small-model", DefaultMaxTokens: 500},
+				},
+			},
+		}
+
+		cfg := &Config{
+			Models: map[SelectedModelType]SelectedModel{
+				SelectedModelTypeLarge: {Provider: "ghost", Model: "missing"},
+			},
+		}
+		cfg.setDefaults(dir, "")
+		store := &ConfigStore{config: cfg, globalDataPath: globalPath}
+		env := env.NewFromMap(map[string]string{})
+		resolver := NewEnvironmentVariableResolver(env)
+		err := cfg.configureProviders(store, env, resolver, knownProviders)
+		require.NoError(t, err)
+
+		err = configureSelectedModels(store, knownProviders, false)
+		require.NoError(t, err)
+
+		// In-memory falls back to default.
+		require.Equal(t, "openai", cfg.Models[SelectedModelTypeLarge].Provider)
+		require.Equal(t, "large-model", cfg.Models[SelectedModelTypeLarge].Model)
+
+		// Disk remains unchanged in reload mode.
+		data, readErr := os.ReadFile(globalPath)
+		require.NoError(t, readErr)
+		require.Contains(t, string(data), `"provider":"ghost"`)
+		require.Contains(t, string(data), `"model":"missing"`)
+	})
 	t.Run("should override defaults", func(t *testing.T) {
 		knownProviders := []catwalk.Provider{
 			{
@@ -1351,7 +1394,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		err := cfg.configureProviders(testStore(cfg), env, resolver, knownProviders)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(testStore(cfg), knownProviders)
+		err = configureSelectedModels(testStore(cfg), knownProviders, true)
 		require.NoError(t, err)
 		large := cfg.Models[SelectedModelTypeLarge]
 		small := cfg.Models[SelectedModelTypeSmall]
@@ -1413,7 +1456,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		err := cfg.configureProviders(testStore(cfg), env, resolver, knownProviders)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(testStore(cfg), knownProviders)
+		err = configureSelectedModels(testStore(cfg), knownProviders, true)
 		require.NoError(t, err)
 		large := cfg.Models[SelectedModelTypeLarge]
 		small := cfg.Models[SelectedModelTypeSmall]
@@ -1458,7 +1501,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		err := cfg.configureProviders(testStore(cfg), env, resolver, knownProviders)
 		require.NoError(t, err)
 
-		err = configureSelectedModels(testStore(cfg), knownProviders)
+		err = configureSelectedModels(testStore(cfg), knownProviders, true)
 		require.NoError(t, err)
 		large := cfg.Models[SelectedModelTypeLarge]
 		require.Equal(t, "large-model", large.Model)

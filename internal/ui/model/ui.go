@@ -252,7 +252,7 @@ type UI struct {
 	}
 
 	// lsp
-	lspStates map[string]workspace.LSPClientInfo
+	lspStates map[string]app.LSPClientInfo
 
 	// mcp
 	mcpStates      map[string]mcp.ClientInfo
@@ -393,7 +393,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		attachments:         attachments,
 		todoSpinner:         todoSpinner,
 		loadingSpinner:      loadingSpinner,
-		lspStates:           make(map[string]workspace.LSPClientInfo),
+		lspStates:           make(map[string]app.LSPClientInfo),
 		mcpStates:           make(map[string]mcp.ClientInfo),
 		pendingToolResults:  make(map[string]*message.ToolResult),
 		notifyBackend:       notification.NoopBackend{},
@@ -747,8 +747,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case pubsub.Event[history.File]:
 		cmds = append(cmds, m.handleFileEvent(msg.Payload))
-	case pubsub.Event[workspace.LSPEvent]:
-		m.lspStates = m.com.Workspace.LSPGetStates()
+	case pubsub.Event[app.LSPEvent]:
+		m.lspStates = app.GetLSPStates()
 	case pubsub.Event[mcp.Event]:
 		switch msg.Payload.Type {
 		case mcp.EventStateChanged:
@@ -3437,7 +3437,10 @@ func (m *UI) sendMessageWithSession(content string, attachments ...message.Attac
 			if isCancelErr || isPermissionErr {
 				return removePlaceholderMsg{}
 			}
-			return agentRunErrorMsg{err: err}
+			return util.InfoMsg{
+				Type: util.InfoTypeError,
+				Msg:  fmt.Sprintf("%v", err),
+			}
 		}
 		return removePlaceholderMsg{}
 	}
@@ -3812,9 +3815,27 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 			Title:   "Crush is waiting...",
 			Message: fmt.Sprintf("Agent's turn completed in \"%s\"", n.SessionTitle),
 		})
+	case notify.TypeReAuthenticate:
+		return m.handleReAuthenticate(n.ProviderID)
 	default:
 		return nil
 	}
+}
+
+func (m *UI) handleReAuthenticate(providerID string) tea.Cmd {
+	cfg := m.com.Config()
+	if cfg == nil {
+		return nil
+	}
+	providerCfg, ok := cfg.Providers.Get(providerID)
+	if !ok {
+		return nil
+	}
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
+	if !ok {
+		return nil
+	}
+	return m.openAuthenticationDialog(providerCfg.ToProvider(), cfg.Models[agentCfg.Model], agentCfg.Model)
 }
 
 // newSession clears the current session state and prepares for a new session.
