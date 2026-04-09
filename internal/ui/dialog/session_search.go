@@ -50,15 +50,21 @@ type SessionSearch struct {
 	previewRow   int            // vertical scroll offset (visual line index)
 	previewRect  image.Rectangle // screen area of preview pane (for mouse hit-test)
 
+	deleting     bool
+	alwaysDelete bool
+
 	keyMap struct {
-		Select      key.Binding
-		Next        key.Binding
-		Previous    key.Binding
-		UpDown      key.Binding
-		Delete      key.Binding
-		Close       key.Binding
-		PreviewUp   key.Binding
-		PreviewDown key.Binding
+		Select        key.Binding
+		Next          key.Binding
+		Previous      key.Binding
+		UpDown        key.Binding
+		Delete        key.Binding
+		ConfirmDelete key.Binding
+		AlwaysDelete  key.Binding
+		CancelDelete  key.Binding
+		Close         key.Binding
+		PreviewUp     key.Binding
+		PreviewDown   key.Binding
 	}
 }
 
@@ -101,6 +107,18 @@ func NewSessionSearch(com *common.Common) *SessionSearch {
 	s.keyMap.Delete = key.NewBinding(
 		key.WithKeys("ctrl+d"),
 		key.WithHelp("ctrl+d", "delete"),
+	)
+	s.keyMap.ConfirmDelete = key.NewBinding(
+		key.WithKeys("y"),
+		key.WithHelp("y", "delete"),
+	)
+	s.keyMap.AlwaysDelete = key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "always"),
+	)
+	s.keyMap.CancelDelete = key.NewBinding(
+		key.WithKeys("n", "ctrl+g", "esc"),
+		key.WithHelp("n", "cancel"),
 	)
 	s.keyMap.PreviewUp = key.NewBinding(
 		key.WithKeys("alt+up", "alt+k"),
@@ -176,6 +194,20 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 		return nil
 
 	case tea.KeyPressMsg:
+		if s.deleting {
+			switch {
+			case key.Matches(msg, s.keyMap.ConfirmDelete), key.Matches(msg, s.keyMap.AlwaysDelete):
+				if key.Matches(msg, s.keyMap.AlwaysDelete) {
+					s.alwaysDelete = true
+				}
+				s.deleting = false
+				return s.performDelete()
+			case key.Matches(msg, s.keyMap.CancelDelete):
+				s.deleting = false
+			}
+			return nil
+		}
+
 		switch {
 		case key.Matches(msg, s.keyMap.Close):
 			return ActionClose{}
@@ -189,17 +221,11 @@ func (s *SessionSearch) HandleMsg(msg tea.Msg) Action {
 			if resultItem.Active {
 				return ActionCmd{util.ReportWarn("Cannot delete an active session")}
 			}
-			idx := s.list.Selected()
-			s.removeResult(resultItem.ID())
-			s.list.SetItems(searchResultItems(s.com.Styles, s.results...)...)
-			if s.list.Len() > 0 {
-				s.list.SetSelected(min(idx, s.list.Len()-1))
+			if s.alwaysDelete {
+				return s.performDelete()
 			}
-			s.previewSID = ""
-			return ActionCmd{tea.Batch(
-				s.deleteSessionCmd(resultItem.DBPath, resultItem.ID()),
-				s.loadPreviewCmd(),
-			)}
+			s.deleting = true
+			return nil
 
 		case key.Matches(msg, s.keyMap.Previous):
 			s.list.Focus()
@@ -287,6 +313,26 @@ func (s *SessionSearch) searchCmd(query string) tea.Cmd {
 	}
 }
 
+// performDelete deletes the currently selected session.
+func (s *SessionSearch) performDelete() Action {
+	item := s.list.SelectedItem()
+	if item == nil {
+		return nil
+	}
+	resultItem := item.(*SearchResultItem)
+	idx := s.list.Selected()
+	s.removeResult(resultItem.ID())
+	s.list.SetItems(searchResultItems(s.com.Styles, s.results...)...)
+	if s.list.Len() > 0 {
+		s.list.SetSelected(min(idx, s.list.Len()-1))
+	}
+	s.previewSID = ""
+	return ActionCmd{tea.Batch(
+		s.deleteSessionCmd(resultItem.DBPath, resultItem.ID()),
+		s.loadPreviewCmd(),
+	)}
+}
+
 func toSearchProjects(projs []projects.Project) []search.Project {
 	sp := make([]search.Project, len(projs))
 	for i, p := range projs {
@@ -352,10 +398,19 @@ func (s *SessionSearch) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	s.list.SetSize(innerWidth, totalHeight-heightOffset)
 	s.help.SetWidth(innerWidth)
 
-	cur := s.Cursor()
+	var cur *tea.Cursor
 	rc := NewRenderContext(t, dialogWidth)
 	rc.Title = "Search Sessions"
-	rc.AddPart(t.Dialog.InputPrompt.Render(s.input.View()))
+	if s.deleting {
+		rc.TitleStyle = t.Dialog.Sessions.DeletingTitle
+		rc.TitleGradientFromColor = t.Dialog.Sessions.DeletingTitleGradientFromColor
+		rc.TitleGradientToColor = t.Dialog.Sessions.DeletingTitleGradientToColor
+		rc.ViewStyle = t.Dialog.Sessions.DeletingView
+		rc.AddPart(t.Dialog.Sessions.DeletingMessage.Render("Delete this session?"))
+	} else {
+		cur = s.Cursor()
+		rc.AddPart(t.Dialog.InputPrompt.Render(s.input.View()))
+	}
 	rc.AddPart(t.Dialog.List.Height(s.list.Height()).Render(s.list.Render()))
 	rc.Help = s.help.View(s)
 	leftView := rc.Render()
@@ -700,6 +755,13 @@ func lineMatchesAnyToken(line string, tokens []string) bool {
 
 // ShortHelp implements [help.KeyMap].
 func (s *SessionSearch) ShortHelp() []key.Binding {
+	if s.deleting {
+		return []key.Binding{
+			s.keyMap.ConfirmDelete,
+			s.keyMap.AlwaysDelete,
+			s.keyMap.CancelDelete,
+		}
+	}
 	return []key.Binding{
 		s.keyMap.UpDown,
 		s.keyMap.Delete,
