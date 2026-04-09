@@ -131,6 +131,28 @@ crush --continue
 			}
 		}
 
+		// Default behavior (no --session, no --continue): resume the most
+		// recent session in the current directory. If cwd is the user's
+		// home directory, fall back to the globally most recent session.
+		if sessionID == "" && !continueLast {
+			cwd, _ := os.Getwd()
+			home, _ := os.UserHomeDir()
+			if cwd == home {
+				if best, ok := resolveGlobalLatestSession(); ok {
+					if best.AbsProjectPath != cwd {
+						if err := os.Chdir(best.AbsProjectPath); err == nil {
+							_ = cmd.Flags().Set("cwd", best.AbsProjectPath)
+						}
+					}
+					sessionID = best.SessionID
+				}
+			} else {
+				if best, ok := resolveLocalLatestSession(cwd); ok {
+					sessionID = best.SessionID
+				}
+			}
+		}
+
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {
 			return err
@@ -665,7 +687,6 @@ func resolveGlobalLatestSession() (search.SearchResult, bool) {
 	if err != nil || len(results) == 0 {
 		return search.SearchResult{}, false
 	}
-	// Find the one with the highest UpdatedAt.
 	best := results[0]
 	for _, r := range results[1:] {
 		if r.UpdatedAt > best.UpdatedAt {
@@ -673,4 +694,30 @@ func resolveGlobalLatestSession() (search.SearchResult, bool) {
 		}
 	}
 	return best, true
+}
+
+// resolveLocalLatestSession finds the most recently updated session
+// in the given project directory.
+func resolveLocalLatestSession(cwd string) (search.SearchResult, bool) {
+	projs, err := projects.List()
+	if err != nil {
+		return search.SearchResult{}, false
+	}
+	for _, p := range projs {
+		if p.Path != cwd {
+			continue
+		}
+		results, err := search.Search([]search.Project{{Path: p.Path, DataDir: p.DataDir}}, "")
+		if err != nil || len(results) == 0 {
+			return search.SearchResult{}, false
+		}
+		best := results[0]
+		for _, r := range results[1:] {
+			if r.UpdatedAt > best.UpdatedAt {
+				best = r
+			}
+		}
+		return best, true
+	}
+	return search.SearchResult{}, false
 }

@@ -136,11 +136,12 @@ func buildInnerTmuxArgs(cmd *cobra.Command) []string {
 	}
 
 	sessionID, _ := cmd.Flags().GetString("session")
-
-	switch {
-	case sessionID != "":
+	if sessionID != "" {
 		args = append(args, "--session", sessionID)
-	default:
+	}
+
+	continueLast, _ := cmd.Flags().GetBool("continue")
+	if continueLast {
 		args = append(args, "--continue")
 	}
 
