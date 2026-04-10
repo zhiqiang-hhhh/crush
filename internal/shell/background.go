@@ -17,30 +17,62 @@ const (
 	MaxBackgroundJobs = 50
 	// CompletedJobRetentionMinutes is how long to keep completed jobs before auto-cleanup (8 hours)
 	CompletedJobRetentionMinutes = 30
+
+	// maxBufferSize is the maximum size of a background shell output
+	// buffer. When exceeded, the oldest content is discarded.
+	maxBufferSize = 1 << 20 // 1 MiB
 )
 
-// syncBuffer is a thread-safe wrapper around bytes.Buffer.
+// syncBuffer is a thread-safe ring buffer that keeps the last
+// maxBufferSize bytes, discarding the oldest content on overflow.
 type syncBuffer struct {
-	buf bytes.Buffer
-	mu  sync.RWMutex
+	mu        sync.RWMutex
+	buf       bytes.Buffer
+	truncated bool
 }
 
 func (sb *syncBuffer) Write(p []byte) (n int, err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	return sb.buf.Write(p)
+	n, err = sb.buf.Write(p)
+	sb.trim()
+	return n, err
 }
 
 func (sb *syncBuffer) WriteString(s string) (n int, err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	return sb.buf.WriteString(s)
+	n, err = sb.buf.WriteString(s)
+	sb.trim()
+	return n, err
 }
 
 func (sb *syncBuffer) String() string {
 	sb.mu.RLock()
 	defer sb.mu.RUnlock()
-	return sb.buf.String()
+	s := sb.buf.String()
+	if sb.truncated {
+		return "… (output truncated)\n" + s
+	}
+	return s
+}
+
+// trim discards the oldest bytes if the buffer exceeds maxBufferSize.
+// Must be called with mu held.
+func (sb *syncBuffer) trim() {
+	if sb.buf.Len() <= maxBufferSize {
+		return
+	}
+	b := sb.buf.Bytes()
+	// Keep the last maxBufferSize bytes, skip forward to a newline
+	// boundary to avoid cutting a line in half.
+	start := len(b) - maxBufferSize
+	if idx := bytes.IndexByte(b[start:], '\n'); idx >= 0 {
+		start += idx + 1
+	}
+	sb.buf.Reset()
+	sb.buf.Write(b[start:])
+	sb.truncated = true
 }
 
 // BackgroundShell represents a shell running in the background.
