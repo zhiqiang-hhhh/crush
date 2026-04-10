@@ -2,9 +2,7 @@ package update
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -12,8 +10,8 @@ import (
 )
 
 const (
-	githubApiUrl = "https://api.github.com/repos/amosbird/crush/releases/latest"
-	userAgent    = "crush/1.0"
+	githubReleasesURL = "https://github.com/amosbird/crush/releases/latest"
+	userAgent         = "crush/1.0"
 )
 
 // Default is the default [Client].
@@ -97,30 +95,41 @@ type github struct{}
 func (c *github) Latest(ctx context.Context) (*Release, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", githubApiUrl, nil)
+	req, err := http.NewRequestWithContext(ctx, "HEAD", githubReleasesURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusFound {
+		return nil, fmt.Errorf("expected redirect from GitHub, got status %d", resp.StatusCode)
 	}
 
-	var release Release
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, err
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return nil, fmt.Errorf("no Location header in GitHub redirect")
 	}
 
-	return &release, nil
+	// Location is like https://github.com/{owner}/{repo}/releases/tag/{tag}
+	idx := strings.LastIndex(loc, "/tag/")
+	if idx == -1 {
+		return nil, fmt.Errorf("unexpected redirect location: %s", loc)
+	}
+	tag := loc[idx+len("/tag/"):]
+
+	return &Release{
+		TagName: tag,
+		HTMLURL: loc,
+	}, nil
 }
