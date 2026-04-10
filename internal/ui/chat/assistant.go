@@ -35,6 +35,8 @@ type AssistantMessageItem struct {
 	thinkingExpanded  bool
 	thinkingBoxHeight int // Tracks the rendered thinking box height for click detection.
 
+	pendingPreview *TextPreviewContent
+
 	mdRenderer         *glamour.TermRenderer
 	mdRendererWidth    int
 	plainRenderer      *glamour.TermRenderer
@@ -272,12 +274,26 @@ func (a *AssistantMessageItem) HandleMouseClick(btn ansi.MouseButton, x, y int) 
 	if btn != ansi.MouseLeft {
 		return false
 	}
-	// check if the click is within the thinking box
 	if a.thinkingBoxHeight > 0 && y < a.thinkingBoxHeight {
 		a.ToggleExpanded()
 		return true
 	}
-	return false
+	text := a.message.Content().Text
+	if text == "" {
+		return false
+	}
+	a.pendingPreview = &TextPreviewContent{
+		Title: "Assistant",
+		Text:  text,
+	}
+	return true
+}
+
+// PendingTextPreview implements TextPreviewable.
+func (a *AssistantMessageItem) PendingTextPreview() *TextPreviewContent {
+	p := a.pendingPreview
+	a.pendingPreview = nil
+	return p
 }
 
 // HandleKeyEvent implements KeyEventHandler.

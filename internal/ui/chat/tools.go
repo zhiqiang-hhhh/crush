@@ -169,6 +169,8 @@ type baseToolMessageItem struct {
 	anim            *anim.Anim
 	expandedContent bool
 	runStartedAt    time.Time
+
+	pendingPreview *TextPreviewContent
 }
 
 var _ Expandable = (*baseToolMessageItem)(nil)
@@ -445,7 +447,21 @@ func (t *baseToolMessageItem) ToggleExpanded() bool {
 
 // HandleMouseClick implements MouseClickable.
 func (t *baseToolMessageItem) HandleMouseClick(btn ansi.MouseButton, x, y int) bool {
-	return btn == ansi.MouseLeft
+	if btn != ansi.MouseLeft {
+		return false
+	}
+	t.pendingPreview = &TextPreviewContent{
+		Title: prettifyToolName(t.toolCall.Name),
+		Text:  t.formatToolForCopy(),
+	}
+	return true
+}
+
+// PendingTextPreview implements TextPreviewable.
+func (t *baseToolMessageItem) PendingTextPreview() *TextPreviewContent {
+	p := t.pendingPreview
+	t.pendingPreview = nil
+	return p
 }
 
 // HandleKeyEvent implements KeyEventHandler.
