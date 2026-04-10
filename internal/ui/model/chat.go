@@ -55,6 +55,13 @@ type DiffPreviewMsg struct {
 	NewContent string
 }
 
+// JobPreviewMsg is sent when a user clicks on a background job to request
+// a live output preview dialog.
+type JobPreviewMsg struct {
+	ShellID     string
+	Description string
+}
+
 // Chat represents the chat UI model that handles chat interactions and
 // messages.
 type Chat struct {
@@ -785,6 +792,16 @@ func (m *Chat) HandleDelayedClick(msg DelayedClickMsg) (bool, tea.Cmd) {
 				if dp := previewable.PendingDiffPreview(); dp != nil {
 					return true, func() tea.Msg {
 						return DiffPreviewMsg{FilePath: dp.FilePath, OldContent: dp.OldContent, NewContent: dp.NewContent}
+					}
+				}
+			}
+			if previewable, ok := selectedItem.(chat.JobPreviewable); ok {
+				if jp := previewable.PendingJobPreview(); jp != nil {
+					return true, func() tea.Msg {
+						return JobPreviewMsg{
+							ShellID:     jp.ShellID,
+							Description: jp.Description,
+						}
 					}
 				}
 			}

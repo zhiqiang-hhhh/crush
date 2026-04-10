@@ -843,6 +843,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.openTextPreviewDialog(msg.Title, msg.Text)
 	case DiffPreviewMsg:
 		m.openDiffPreviewDialog(msg.FilePath, msg.OldContent, msg.NewContent)
+	case JobPreviewMsg:
+		cmds = append(cmds, m.openJobPreviewDialog(msg))
 	case tea.MouseClickMsg:
 		// Pass mouse events to dialogs first if any are open.
 		if m.dialog.HasDialogs() {
@@ -1959,7 +1961,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 	}
 
 	if key.Matches(msg, m.keyMap.Quit) && !m.dialog.ContainsDialog(dialog.QuitID) {
-		// Always handle quit keys first
+		if m.dialog.ContainsDialog(dialog.JobPreviewID) {
+			return m.handleDialogMsg(msg)
+		}
 		if cmd := m.openQuitDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -3674,6 +3678,13 @@ func (m *UI) openDiffPreviewDialog(filePath, oldContent, newContent string) {
 	m.dialog.CloseDialog(dialog.DiffPreviewID)
 	d := dialog.NewDiffPreview(m.com, filePath, oldContent, newContent)
 	m.dialog.OpenDialog(d)
+}
+
+func (m *UI) openJobPreviewDialog(msg JobPreviewMsg) tea.Cmd {
+	m.dialog.CloseDialog(dialog.JobPreviewID)
+	d, cmd := dialog.NewJobPreview(m.com, msg.ShellID, msg.Description)
+	m.dialog.OpenDialog(d)
+	return cmd
 }
 
 // openModelsDialog opens the models dialog.

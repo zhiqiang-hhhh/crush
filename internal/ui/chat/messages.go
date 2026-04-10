@@ -76,6 +76,18 @@ type DiffPreviewable interface {
 	PendingDiffPreview() *DiffPreviewContent
 }
 
+// JobPreviewContent holds metadata for a live background job preview.
+type JobPreviewContent struct {
+	ShellID     string
+	Description string
+}
+
+// JobPreviewable represents an item that can provide a background job
+// for live preview after a mouse click.
+type JobPreviewable interface {
+	PendingJobPreview() *JobPreviewContent
+}
+
 // KeyEventHandler is an interface for items that can handle key events.
 type KeyEventHandler interface {
 	HandleKeyEvent(key tea.KeyMsg) (bool, tea.Cmd)

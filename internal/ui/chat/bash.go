@@ -21,6 +21,7 @@ import (
 // BashToolMessageItem is a message item that represents a bash tool call.
 type BashToolMessageItem struct {
 	*baseToolMessageItem
+	pendingJobPreview *JobPreviewContent
 }
 
 var _ ToolMessageItem = (*BashToolMessageItem)(nil)
@@ -32,7 +33,39 @@ func NewBashToolMessageItem(
 	result *message.ToolResult,
 	canceled bool,
 ) ToolMessageItem {
-	return newBaseToolMessageItem(sty, toolCall, result, &BashToolRenderContext{}, canceled)
+	base := newBaseToolMessageItem(sty, toolCall, result, &BashToolRenderContext{}, canceled)
+	return &BashToolMessageItem{baseToolMessageItem: base}
+}
+
+// HandleMouseClick overrides the base to open a live job preview for
+// background jobs.
+func (b *BashToolMessageItem) HandleMouseClick(btn ansi.MouseButton, x, y int) bool {
+	if btn != ansi.MouseLeft {
+		return false
+	}
+	if b.result == nil {
+		return false
+	}
+	var meta tools.BashResponseMetadata
+	if err := json.Unmarshal([]byte(b.result.Metadata), &meta); err == nil && meta.ShellID != "" {
+		var params tools.BashParams
+		if err := json.Unmarshal([]byte(b.toolCall.Input), &params); err != nil {
+			params.Command = b.toolCall.Input
+		}
+		b.pendingJobPreview = &JobPreviewContent{
+			ShellID:     meta.ShellID,
+			Description: cmp.Or(meta.Description, params.Command),
+		}
+		return true
+	}
+	return b.baseToolMessageItem.HandleMouseClick(btn, x, y)
+}
+
+// PendingJobPreview implements JobPreviewable.
+func (b *BashToolMessageItem) PendingJobPreview() *JobPreviewContent {
+	p := b.pendingJobPreview
+	b.pendingJobPreview = nil
+	return p
 }
 
 // BashToolRenderContext renders bash tool messages.
