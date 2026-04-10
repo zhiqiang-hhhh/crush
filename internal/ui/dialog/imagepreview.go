@@ -48,7 +48,7 @@ func NewImagePreview(com *common.Common, att message.Attachment, caps *common.Ca
 		att: att,
 	}
 	d.km.Close = key.NewBinding(
-		key.WithKeys("ctrl+g", "q", "enter"),
+		key.WithKeys("ctrl+g", "q", "enter", "esc"),
 		key.WithHelp("ctrl+g/q", "close"),
 	)
 	if caps != nil {

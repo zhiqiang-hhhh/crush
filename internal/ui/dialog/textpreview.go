@@ -55,7 +55,7 @@ func NewTextPreview(com *common.Common, title, content string) *TextPreview {
 		viewportDirty: true,
 	}
 	d.km.Close = key.NewBinding(
-		key.WithKeys("ctrl+g", "q"),
+		key.WithKeys("ctrl+g", "q", "esc"),
 		key.WithHelp("ctrl+g/q", "close"),
 	)
 	d.km.ScrollUp = key.NewBinding(key.WithKeys("up", "k"))

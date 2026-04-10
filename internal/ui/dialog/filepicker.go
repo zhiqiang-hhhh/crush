@@ -92,7 +92,7 @@ func NewFilePicker(com *common.Common) (*FilePicker, tea.Cmd) {
 		key.WithHelp("↑↓←→", "navigate"),
 	)
 	f.km.Close = key.NewBinding(
-		key.WithKeys("ctrl+g"),
+		key.WithKeys("ctrl+g", "esc"),
 		key.WithHelp("ctrl+g", "close/exit"),
 	)
 

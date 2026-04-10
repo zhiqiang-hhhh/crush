@@ -81,7 +81,7 @@ func NewDiffPreview(com *common.Common, filePath, oldContent, newContent string)
 		splitMode:     true,
 		startLine:     -1,
 	}
-	d.km.Close = key.NewBinding(key.WithKeys("ctrl+g", "q"))
+	d.km.Close = key.NewBinding(key.WithKeys("ctrl+g", "q", "esc"))
 	d.km.ToggleMode = key.NewBinding(key.WithKeys("t"))
 	d.km.Fullscreen = key.NewBinding(key.WithKeys("f"))
 	d.km.Copy = key.NewBinding(key.WithKeys("c"))
