@@ -157,6 +157,7 @@ type sessionAgent struct {
 	isYolo               bool
 	dataDir              string
 	notify               pubsub.Publisher[notify.Notification]
+	tokenRefresher       func(ctx context.Context) error
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, context.CancelFunc]
@@ -181,6 +182,7 @@ type SessionAgentOptions struct {
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
+	TokenRefresher       func(ctx context.Context) error
 }
 
 func NewSessionAgent(
@@ -204,6 +206,7 @@ func NewSessionAgent(
 		isYolo:               opts.IsYolo,
 		dataDir:              opts.DataDir,
 		notify:               opts.Notify,
+		tokenRefresher:       opts.TokenRefresher,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, context.CancelFunc](),
 		circuitBreaker:       newSummarizeCircuitBreaker(),
@@ -380,6 +383,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		FrequencyPenalty:  call.FrequencyPenalty,
 		StreamIdleTimeout: streamIdleTimeout,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
+			if a.tokenRefresher != nil {
+				if refreshErr := a.tokenRefresher(callContext); refreshErr != nil {
+					slog.Warn("Token refresh in PrepareStep failed", "error", refreshErr)
+				}
+			}
+
 			prepared.Messages = options.Messages
 			for i := range prepared.Messages {
 				prepared.Messages[i].ProviderOptions = nil

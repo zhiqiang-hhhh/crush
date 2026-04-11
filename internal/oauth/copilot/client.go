@@ -14,17 +14,24 @@ import (
 
 var assistantRolePattern = regexp.MustCompile(`"role"\s*:\s*"assistant"`)
 
+// TokenFunc returns the current bearer token for Copilot API requests.
+type TokenFunc func() string
+
 // NewClient creates a new HTTP client with a custom transport that adds the
 // X-Initiator header based on message history in the request body.
-func NewClient(isSubAgent, debug bool) *http.Client {
+// If tokenFn is non-nil, it overrides the Authorization header on every
+// request with the latest token, allowing transparent token refresh during
+// long-running agent loops.
+func NewClient(isSubAgent, debug bool, tokenFn TokenFunc) *http.Client {
 	return &http.Client{
-		Transport: &initiatorTransport{debug: debug, isSubAgent: isSubAgent},
+		Transport: &initiatorTransport{debug: debug, isSubAgent: isSubAgent, tokenFn: tokenFn},
 	}
 }
 
 type initiatorTransport struct {
 	debug      bool
 	isSubAgent bool
+	tokenFn    TokenFunc
 }
 
 func (t *initiatorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -37,6 +44,14 @@ func (t *initiatorTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if req == nil {
 		return nil, fmt.Errorf("HTTP request is nil")
 	}
+
+	// Override Authorization with latest token if available.
+	if t.tokenFn != nil {
+		if token := t.tokenFn(); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
 	if req.Body == http.NoBody {
 		// No body to inspect; default to user.
 		req.Header.Set(xInitiatorHeader, userInitiator)

@@ -470,6 +470,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	}
 
 	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
+	providerID := large.ModelCfg.Provider
 	result := NewSessionAgent(SessionAgentOptions{
 		LargeModel:           large,
 		SmallModel:           small,
@@ -488,6 +489,17 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Messages:             c.messages,
 		Tools:                nil,
 		Notify:               c.notify,
+		TokenRefresher: func(ctx context.Context) error {
+			cfg, ok := c.cfg.Config().Providers.Get(providerID)
+			if !ok || cfg.OAuthToken == nil || !cfg.OAuthToken.IsExpired() {
+				return nil
+			}
+			slog.Debug("Proactive token refresh in PrepareStep", "provider", providerID)
+			if err := c.refreshOAuth2Token(ctx, cfg); err != nil {
+				return err
+			}
+			return nil
+		},
 	})
 
 	c.readyWg.Go(func() error {
@@ -840,7 +852,13 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 	var httpClient *http.Client
 	if providerID == string(catwalk.InferenceProviderCopilot) {
 		opts = append(opts, openaicompat.WithUseResponsesAPI())
-		httpClient = copilot.NewClient(isSubAgent, c.cfg.Config().Options.Debug)
+		tokenFn := func() string {
+			if cfg, ok := c.cfg.Config().Providers.Get(providerID); ok {
+				return cfg.APIKey
+			}
+			return ""
+		}
+		httpClient = copilot.NewClient(isSubAgent, c.cfg.Config().Options.Debug, tokenFn)
 	} else if c.cfg.Config().Options.Debug {
 		httpClient = log.NewHTTPClient()
 	}
