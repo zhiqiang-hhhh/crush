@@ -27,6 +27,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/db"
 	"github.com/charmbracelet/crush/internal/event"
+	"github.com/charmbracelet/crush/internal/home"
 	crushlog "github.com/charmbracelet/crush/internal/log"
 	"github.com/charmbracelet/crush/internal/projects"
 	"github.com/charmbracelet/crush/internal/proto"
@@ -56,6 +57,7 @@ func init() {
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	rootCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	rootCmd.Flags().Bool("no-tmux", false, "Don't auto-start a tmux/psmux session")
+	rootCmd.Flags().Bool("force-home", false, "Allow creating a new session in the home directory")
 	rootCmd.MarkFlagsMutuallyExclusive("session", "continue")
 
 	rootCmd.AddCommand(
@@ -131,6 +133,39 @@ crush --continue
 			}
 		}
 
+		// When running from the home directory without an explicit session
+		// or --continue, automatically resume the most recent global session
+		// instead of treating ~ as a project directory.
+		if sessionID == "" && !continueLast {
+			cwd, _ := os.Getwd()
+			forceHome, _ := cmd.Flags().GetBool("force-home")
+			if cwd == home.Dir() && !forceHome {
+				best, ok := resolveGlobalLatestSession()
+				if !ok {
+					return errors.New("no existing sessions found; use --force-home to create a session in the home directory")
+				}
+				if best.AbsProjectPath != cwd {
+					if err := os.Chdir(best.AbsProjectPath); err == nil {
+						_ = cmd.Flags().Set("cwd", best.AbsProjectPath)
+					}
+				}
+				sessionID = best.SessionID
+			}
+		}
+
+		// When running from a non-home project directory without an
+		// explicit session, automatically resume the most recent local
+		// session for this directory. If no local session exists, fall
+		// through to create a new one.
+		if sessionID == "" && !continueLast {
+			cwd, _ := os.Getwd()
+			if cwd != home.Dir() {
+				if best, ok := resolveLocalLatestSession(cwd); ok {
+					sessionID = best.SessionID
+				}
+			}
+		}
+
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {
 			return err
@@ -151,6 +186,11 @@ crush --continue
 		if appWs, ok := ws.(*workspace.AppWorkspace); ok {
 			com.App = appWs.App()
 		}
+
+		if cwd, err := os.Getwd(); err == nil {
+			com.Mux.RenameWindow(filepath.Base(cwd))
+		}
+
 		model := ui.New(com, sessionID, continueLast)
 
 		var env uv.Environ = os.Environ()
