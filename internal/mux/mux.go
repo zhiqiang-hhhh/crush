@@ -50,6 +50,16 @@ func (m *Mux) NewWindow(cwd string, args ...string) error {
 	return m.run(cmdArgs...)
 }
 
+// RenameWindow sets the name of the current tmux window.
+func (m *Mux) RenameWindow(name string) {
+	if m == nil {
+		return
+	}
+	go func() {
+		_ = m.run("rename-window", name)
+	}()
+}
+
 // SetPaneOption sets a pane-level user option (e.g. @crush_session).
 func (m *Mux) SetPaneOption(key, value string) {
 	if m == nil {
