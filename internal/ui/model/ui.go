@@ -1528,10 +1528,6 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionNewSession:
-		if m.isAgentBusy() {
-			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before starting a new session..."))
-			break
-		}
 		if cmd := m.newSession(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -2053,10 +2049,6 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				if !m.hasSession() {
 					break
 				}
-				if m.isAgentBusy() {
-					cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before starting a new session..."))
-					break
-				}
 				if cmd := m.newSession(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -2182,10 +2174,6 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				m.chat.Blur()
 			case key.Matches(msg, m.keyMap.Chat.NewSession):
 				if !m.hasSession() {
-					break
-				}
-				if m.isAgentBusy() {
-					cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before starting a new session..."))
 					break
 				}
 				m.focus = uiFocusEditor
