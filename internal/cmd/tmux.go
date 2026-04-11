@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -62,9 +66,8 @@ func shouldAutoTmux() bool {
 // execIntoTmux replaces the current process with a tmux session running crush.
 // On Unix this uses syscall.Exec; on Windows it uses os/exec and waits.
 //
-// This mirrors the behavior of startcrush-tmux:
-//
-//	TMUX=/tmp/tmux-crush tmux -f <config> -u new-session -A -s crush -c <cwd> <crush> --continue
+// Each working directory gets its own tmux session so that running
+// crush in different projects does not reattach to the wrong one.
 func execIntoTmux(crushArgs []string) error {
 	muxBin := findMux()
 	if muxBin == "" {
@@ -90,14 +93,18 @@ func execIntoTmux(crushArgs []string) error {
 	// the user's regular tmux sessions.
 	socket := tmuxSocketPath()
 
+	// Derive a per-directory tmux session name so that each project
+	// gets its own multiplexer session.
+	sessionName := tmuxSessionName(cwd)
+
 	// Build tmux args:
-	// tmux -S <socket> -f <config> -u new-session -A -s crush -c <cwd> <exe> [args...]
+	// tmux -S <socket> -f <config> -u new-session -A -s <session> -c <cwd> <exe> [args...]
 	args := []string{
 		"-S", socket,
 		"-f", confPath,
 		"-u",
 		"new-session", "-A",
-		"-s", "crush",
+		"-s", sessionName,
 		"-c", cwd,
 	}
 
@@ -107,6 +114,18 @@ func execIntoTmux(crushArgs []string) error {
 	args = append(args, windowCmd...)
 
 	return muxExec(muxBin, args)
+}
+
+// tmuxSessionName returns a tmux session name derived from the working
+// directory. It uses the directory basename plus a short hash of the
+// full path to keep names human-readable yet unique.
+func tmuxSessionName(cwd string) string {
+	base := filepath.Base(cwd)
+	// Sanitize: tmux session names cannot contain dots or colons.
+	base = strings.NewReplacer(".", "-", ":", "-").Replace(base)
+	h := sha256.Sum256([]byte(cwd))
+	short := hex.EncodeToString(h[:4])
+	return "crush-" + base + "-" + short
 }
 
 // buildInnerTmuxArgs builds the argument list for the crush process that
