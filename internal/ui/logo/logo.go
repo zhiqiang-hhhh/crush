@@ -24,7 +24,6 @@ type Opts struct {
 	FieldColor   color.Color // diagonal lines
 	TitleColorA  color.Color // left gradient ramp point
 	TitleColorB  color.Color // right gradient ramp point
-	CharmColor   color.Color // Charm™ text color
 	VersionColor color.Color // Version text color
 	Width        int         // width of the rendered logo, used for truncation
 }
@@ -35,8 +34,6 @@ type Opts struct {
 // The compact argument determines whether it renders compact for the sidebar
 // or wider for the main pane.
 func Render(s *styles.Styles, version string, compact bool, o Opts) string {
-	const charm = " Charm™"
-
 	fg := func(c color.Color, s string) string {
 		return lipgloss.NewStyle().Foreground(c).Render(s)
 	}
@@ -44,10 +41,10 @@ func Render(s *styles.Styles, version string, compact bool, o Opts) string {
 	// Title.
 	const spacing = 1
 	letterforms := []letterform{
-		letterC,
-		letterR,
-		letterU,
 		letterSStylized,
+		letterM,
+		letterI,
+		letterT,
 		letterH,
 	}
 	stretchIndex := -1 // -1 means no stretching.
@@ -63,12 +60,10 @@ func Render(s *styles.Styles, version string, compact bool, o Opts) string {
 	}
 	smith = b.String()
 
-	// Charm and version.
-	metaRowGap := 1
-	maxVersionWidth := smithWidth - lipgloss.Width(charm) - metaRowGap
-	version = ansi.Truncate(version, maxVersionWidth, "…") // truncate version if too long.
-	gap := max(0, smithWidth-lipgloss.Width(charm)-lipgloss.Width(version))
-	metaRow := fg(o.CharmColor, charm) + strings.Repeat(" ", gap) + fg(o.VersionColor, version)
+	// Version row.
+	version = ansi.Truncate(version, smithWidth, "…")
+	gap := max(0, smithWidth-lipgloss.Width(version))
+	metaRow := strings.Repeat(" ", gap) + fg(o.VersionColor, version)
 
 	// Join the meta row and big Smith title.
 	smith = strings.TrimSpace(metaRow + "\n" + smith)
@@ -120,10 +115,10 @@ func Render(s *styles.Styles, version string, compact bool, o Opts) string {
 func LandingRender(t *styles.Styles, colorA, colorB color.Color) string {
 	const spacing = 1
 	letterforms := []letterform{
-		letterC,
-		letterR,
-		letterU,
 		letterSStylized,
+		letterM,
+		letterI,
+		letterT,
 		letterH,
 	}
 	smith := renderWord(spacing, -1, letterforms...)
@@ -137,8 +132,7 @@ func LandingRender(t *styles.Styles, colorA, colorB color.Color) string {
 // SmallRender renders a smaller version of the Smith logo, suitable for
 // smaller windows or sidebar usage.
 func SmallRender(t *styles.Styles, width int) string {
-	title := t.Base.Foreground(t.Secondary).Render("Charm™")
-	title = fmt.Sprintf("%s %s", title, styles.ApplyBoldForegroundGrad(t, "Smith", t.Secondary, t.Primary))
+	title := styles.ApplyBoldForegroundGrad(t, "Smith", t.Secondary, t.Primary)
 	remainingWidth := width - lipgloss.Width(title) - 1 // 1 for the space after "Smith"
 	if remainingWidth > 0 {
 		lines := strings.Repeat("╱", remainingWidth)
@@ -170,32 +164,92 @@ func renderWord(spacing int, stretchIndex int, letterforms ...letterform) string
 	)
 }
 
-// letterC renders the letter C in a stylized way. It takes an integer that
-// determines how many cells to stretch the letter. If the stretch is less than
-// 1, it defaults to no stretching.
-func letterC(stretch bool) string {
+// letterM renders the letter M in a stylized way.
+func letterM(stretch bool) string {
 	// Here's what we're making:
 	//
-	// ▄▀▀▀▀
-	// █
-	//	▀▀▀▀
+	// █▄ ▄█
+	// █ █ █
+	// ▀   ▀
 
 	left := heredoc.Doc(`
+		█
+		█
+		▀
+	`)
+	topLeft := heredoc.Doc(`
 		▄
+		
+	`)
+	center := heredoc.Doc(`
+		
 		█
 	`)
+	topRight := heredoc.Doc(`
+		▄
+		
+	`)
 	right := heredoc.Doc(`
+		█
+		█
+		▀
+	`)
+	_ = stretch
+	return joinLetterform(left, topLeft, " ", center, " ", topRight, right)
+}
+
+// letterI renders the letter I in a stylized way.
+func letterI(stretch bool) string {
+	// Here's what we're making:
+	//
+	// ▀█▀
+	//  █
+	// ▀▀▀
+
+	top := heredoc.Doc(`
+		▀
+		
+		▀
+	`)
+	mid := heredoc.Doc(`
+		█
+		█
+		▀
+	`)
+	_ = stretch
+	return joinLetterform(top, mid, top)
+}
+
+// letterT renders the letter T in a stylized way.
+func letterT(stretch bool) string {
+	// Here's what we're making:
+	//
+	// ▀▀█▀▀
+	//   █
+	//   ▀
+
+	side := heredoc.Doc(`
 		▀
 
+	`)
+	center := heredoc.Doc(`
+		█
+		█
 		▀
 	`)
 	return joinLetterform(
-		left,
-		stretchLetterformPart(right, letterformProps{
+		stretchLetterformPart(side, letterformProps{
 			stretch:    stretch,
-			width:      4,
-			minStretch: 7,
-			maxStretch: 12,
+			width:      2,
+			minStretch: 4,
+			maxStretch: 8,
+		}),
+		center,
+		stretchLetterformPart(side, letterformProps{
+			stretch:    stretch,
+			width:      2,
+			minStretch: 4,
+			maxStretch: 8,
 		}),
 	)
 }
@@ -230,45 +284,7 @@ func letterH(stretch bool) string {
 	)
 }
 
-// letterR renders the letter R in a stylized way. It takes an integer that
-// determines how many cells to stretch the letter. If the stretch is less than
-// 1, it defaults to no stretching.
-func letterR(stretch bool) string {
-	// Here's what we're making:
-	//
-	// █▀▀▀▄
-	// █▀▀▀▄
-	// ▀   ▀
-
-	left := heredoc.Doc(`
-		█
-		█
-		▀
-	`)
-	center := heredoc.Doc(`
-		▀
-		▀
-	`)
-	right := heredoc.Doc(`
-		▄
-		▄
-		▀
-	`)
-	return joinLetterform(
-		left,
-		stretchLetterformPart(center, letterformProps{
-			stretch:    stretch,
-			width:      3,
-			minStretch: 7,
-			maxStretch: 12,
-		}),
-		right,
-	)
-}
-
-// letterSStylized renders the letter S in a stylized way, more so than
-// [letterS]. It takes an integer that determines how many cells to stretch the
-// letter. If the stretch is less than 1, it defaults to no stretching.
+// letterSStylized renders the letter S in a stylized way.
 func letterSStylized(stretch bool) string {
 	// Here's what we're making:
 	//
@@ -299,37 +315,6 @@ func letterSStylized(stretch bool) string {
 			maxStretch: 12,
 		}),
 		right,
-	)
-}
-
-// letterU renders the letter U in a stylized way. It takes an integer that
-// determines how many cells to stretch the letter. If the stretch is less than
-// 1, it defaults to no stretching.
-func letterU(stretch bool) string {
-	// Here's what we're making:
-	//
-	// █   █
-	// █   █
-	//	▀▀▀
-
-	side := heredoc.Doc(`
-		█
-		█
-	`)
-	middle := heredoc.Doc(`
-
-
-		▀
-	`)
-	return joinLetterform(
-		side,
-		stretchLetterformPart(middle, letterformProps{
-			stretch:    stretch,
-			width:      3,
-			minStretch: 7,
-			maxStretch: 12,
-		}),
-		side,
 	)
 }
 

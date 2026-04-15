@@ -73,7 +73,6 @@ type Styles struct {
 
 	// Header
 	Header struct {
-		Charm        lipgloss.Style // Style for "Charm™" label
 		Diagonals    lipgloss.Style // Style for diagonal separators (╱)
 		Percentage   lipgloss.Style // Style for context percentage
 		Keystroke    lipgloss.Style // Style for keystroke hints (e.g., "ctrl+d")
@@ -162,7 +161,6 @@ type Styles struct {
 	LogoFieldColor   color.Color
 	LogoTitleColorA  color.Color
 	LogoTitleColorB  color.Color
-	LogoCharmColor   color.Color
 	LogoVersionColor color.Color
 
 	// Colors - semantic colors for tool rendering.
@@ -1090,7 +1088,6 @@ func DefaultStyles() Styles {
 	s.TagInfo = s.TagBase.Background(blueLight)
 
 	// Compact header styles
-	s.Header.Charm = base.Foreground(secondary)
 	s.Header.Diagonals = base.Foreground(primary)
 	s.Header.Percentage = s.Muted
 	s.Header.Keystroke = s.Muted
@@ -1213,7 +1210,6 @@ func DefaultStyles() Styles {
 	s.LogoFieldColor = primary
 	s.LogoTitleColorA = secondary
 	s.LogoTitleColorB = primary
-	s.LogoCharmColor = secondary
 	s.LogoVersionColor = primary
 
 	// Section

@@ -3,7 +3,7 @@
 //	@title			Smith API
 //	@version		1.0
 //	@description	Smith is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.
-//	@contact.name	Charm
+//	@contact.name	Smith
 //	@contact.url	https://charm.sh
 //	@license.name	MIT
 //	@license.url	https://github.com/zhiqiang-hhhh/smith/blob/main/LICENSE
