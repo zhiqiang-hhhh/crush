@@ -50,16 +50,29 @@ func openInLSPs(
 		return
 	}
 
-	startCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
 
-	manager.Start(startCtx, filepath)
+		startCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
 
-	for client := range manager.Clients().Seq() {
-		if !client.HandlesFile(filepath) {
-			continue
+		manager.Start(startCtx, filepath)
+
+		for client := range manager.Clients().Seq() {
+			if !client.HandlesFile(filepath) {
+				continue
+			}
+			_ = client.OpenFileOnDemand(ctx, filepath)
 		}
-		_ = client.OpenFileOnDemand(ctx, filepath)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		slog.Warn("LSP open timed out, continuing without LSP",
+			"file", filepath)
+	case <-ctx.Done():
 	}
 }
 
@@ -88,6 +101,11 @@ func waitForLSPDiagnostics(
 	wg.Wait()
 }
 
+// lspNotifyTimeout is the hard upper bound for the entire notifyLSPs flow.
+// jsonrpc2's send lock does not respect context cancellation, so a
+// goroutine + select is required to guarantee the edit tool returns.
+const lspNotifyTimeout = 20 * time.Second
+
 // notifyLSPs notifies LSP servers that a file has changed and waits for
 // updated diagnostics. Use this after edit/multiedit operations.
 func notifyLSPs(
@@ -99,23 +117,36 @@ func notifyLSPs(
 		return
 	}
 
-	startCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
 
-	manager.Start(startCtx, filepath)
+		startCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
 
-	var wg sync.WaitGroup
-	for client := range manager.Clients().Seq() {
-		if !client.HandlesFile(filepath) {
-			continue
+		manager.Start(startCtx, filepath)
+
+		var wg sync.WaitGroup
+		for client := range manager.Clients().Seq() {
+			if !client.HandlesFile(filepath) {
+				continue
+			}
+			_ = client.OpenFileOnDemand(ctx, filepath)
+			_ = client.NotifyChange(ctx, filepath)
+			wg.Go(func() {
+				client.WaitForDiagnostics(ctx, 5*time.Second)
+			})
 		}
-		_ = client.OpenFileOnDemand(ctx, filepath)
-		_ = client.NotifyChange(ctx, filepath)
-		wg.Go(func() {
-			client.WaitForDiagnostics(ctx, 5*time.Second)
-		})
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(lspNotifyTimeout):
+		slog.Warn("LSP notification timed out, continuing without diagnostics",
+			"file", filepath)
+	case <-ctx.Done():
 	}
-	wg.Wait()
 }
 
 func getDiagnostics(filePath string, manager *lsp.Manager) string {
