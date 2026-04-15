@@ -465,23 +465,24 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 
 	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           large,
-		SmallModel:           small,
-		SummaryModel:         summaryModel,
-		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
-		SystemPrompt:         "",
-		IsSubAgent:           isSubAgent,
-		AgentName:            agent.Name,
-		FileTracker:          c.filetracker,
-		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
-		MaxTokensToSummarize: c.cfg.Config().Options.MaxTokensToSummarize,
-		AutoTitle:            c.cfg.Config().Options.AutoTitle,
-		IsYolo:               c.permissions.SkipRequests(),
-		DataDir:              c.cfg.Config().Options.DataDirectory,
-		Sessions:             c.sessions,
-		Messages:             c.messages,
-		Tools:                nil,
-		Notify:               c.notify,
+		LargeModel:             large,
+		SmallModel:             small,
+		SummaryModel:           summaryModel,
+		SystemPromptPrefix:     largeProviderCfg.SystemPromptPrefix,
+		SystemPrompt:           "",
+		IsSubAgent:             isSubAgent,
+		AgentName:              agent.Name,
+		FileTracker:            c.filetracker,
+		DisableAutoSummarize:   c.cfg.Config().Options.DisableAutoSummarize,
+		MaxTokensToSummarize:   c.cfg.Config().Options.MaxTokensToSummarize,
+		AutoTitle:              c.cfg.Config().Options.AutoTitle,
+		IsYolo:                 c.permissions.SkipRequests(),
+		NeedsCodexInstructions: largeProviderCfg.Type == openai.Name && largeProviderCfg.OAuthToken != nil,
+		DataDir:                c.cfg.Config().Options.DataDirectory,
+		Sessions:               c.sessions,
+		Messages:               c.messages,
+		Tools:                  nil,
+		Notify:                 c.notify,
 		OnPrepareStep: func(ctx context.Context) error {
 			return c.refreshTokenForProvider(ctx, large.ModelCfg.Provider)
 		},
@@ -974,6 +975,11 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		}
 	}
 
+	// Handle special headers for OpenAI OAuth (ChatGPT Codex endpoint).
+	if providerCfg.Type == openai.Name && providerCfg.OAuthToken != nil && providerCfg.OAuthToken.AccountID != "" {
+		headers["ChatGPT-Account-Id"] = providerCfg.OAuthToken.AccountID
+	}
+
 	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
 	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
 
@@ -1109,8 +1115,11 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 	}
 
 	// Update models and tools for all top-level agents.
+	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
+	codex := largeProviderCfg.Type == openai.Name && largeProviderCfg.OAuthToken != nil
 	for agentID, agent := range c.agents {
 		agent.SetModels(large, small, summaryModel)
+		agent.SetCodexInstructions(codex)
 		agentCfg, ok := c.cfg.Config().Agents[agentID]
 		if !ok {
 			continue

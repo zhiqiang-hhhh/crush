@@ -4,11 +4,13 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,16 +21,19 @@ const (
 	clientID      = "app_EMoamEEZ73f0CkXaXp7hrann"
 	defaultIssuer = "https://auth.openai.com"
 	userAgent     = "Smith/1.0"
+	// CodexBaseURL is the base URL for the ChatGPT Codex API endpoint.
+	CodexBaseURL = "https://chatgpt.com/backend-api/codex"
 	// MaxPollTimeout is the maximum time to wait for user authorization.
 	MaxPollTimeout = 15 * time.Minute
 )
 
 // DeviceCode contains the response from requesting a device code.
 type DeviceCode struct {
-	DeviceAuthID    string `json:"device_auth_id"`
-	UserCode        string `json:"user_code"`
-	VerificationURL string `json:"verification_url"`
-	Interval        int    `json:"interval"`
+	DeviceAuthID    string      `json:"device_auth_id"`
+	UserCode        string      `json:"user_code"`
+	VerificationURL string      `json:"verification_url"`
+	RawInterval     json.Number `json:"interval"`
+	Interval        int         `json:"-"`
 }
 
 // RequestDeviceCode initiates the device code flow with OpenAI.
@@ -71,6 +76,14 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	var dc DeviceCode
 	if err := json.Unmarshal(respBody, &dc); err != nil {
 		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if dc.RawInterval.String() != "" {
+		n, err := strconv.Atoi(dc.RawInterval.String())
+		if err != nil {
+			return nil, fmt.Errorf("parse interval %q: %w", dc.RawInterval, err)
+		}
+		dc.Interval = n
 	}
 
 	dc.VerificationURL = defaultIssuer + "/codex/device"
@@ -155,8 +168,9 @@ func PollForToken(ctx context.Context, dc *DeviceCode) (*oauth.Token, error) {
 	}
 }
 
-// exchangeCodeForTokens exchanges the authorization code for tokens using
-// PKCE, then performs a token exchange to get an API key.
+// exchangeCodeForTokens exchanges the authorization code for tokens
+// using PKCE and returns an OAuth token with the access token for use
+// with the ChatGPT Codex endpoint.
 func exchangeCodeForTokens(ctx context.Context, codeResp *codeSuccessResp) (*oauth.Token, error) {
 	redirectURI := defaultIssuer + "/deviceauth/callback"
 
@@ -201,62 +215,55 @@ func exchangeCodeForTokens(ctx context.Context, codeResp *codeSuccessResp) (*oau
 		return nil, fmt.Errorf("unmarshal token response: %w", err)
 	}
 
-	apiKey, err := obtainAPIKey(ctx, tokenResp.IDToken)
-	if err != nil {
-		apiKey = tokenResp.AccessToken
+	accountID := extractAccountID(tokenResp.IDToken)
+	if accountID == "" {
+		accountID = extractAccountID(tokenResp.AccessToken)
 	}
 
 	token := &oauth.Token{
-		AccessToken:  apiKey,
+		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ExpiresIn:    tokenResp.ExpiresIn,
+		AccountID:    accountID,
 	}
 	token.SetExpiresAt()
 
 	return token, nil
 }
 
-// obtainAPIKey exchanges the ID token for an OpenAI API key.
-func obtainAPIKey(ctx context.Context, idToken string) (string, error) {
-	data := url.Values{
-		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
-		"client_id":          {clientID},
-		"requested_token":    {"openai-api-key"},
-		"subject_token":      {idToken},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
+// extractAccountID parses the JWT payload and extracts the ChatGPT
+// account ID used for the ChatGPT-Account-Id header.
+func extractAccountID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, defaultIssuer+"/oauth/token", strings.NewReader(data.Encode()))
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", fmt.Errorf("create API key request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", userAgent)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("execute API key request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return "", fmt.Errorf("read API key response: %w", err)
+		return ""
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API key exchange failed: status %d, body %q", resp.StatusCode, string(body))
+	var claims struct {
+		Auth *struct {
+			AccountID string `json:"chatgpt_account_id"`
+		} `json:"https://api.openai.com/auth"`
+		Organizations []struct {
+			ID string `json:"id"`
+		} `json:"organizations"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
 	}
 
-	var result struct {
-		AccessToken string `json:"access_token"`
+	if claims.Auth != nil && claims.Auth.AccountID != "" {
+		return claims.Auth.AccountID
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("unmarshal API key response: %w", err)
+	if len(claims.Organizations) > 0 {
+		return claims.Organizations[0].ID
 	}
 
-	return result.AccessToken, nil
+	return ""
 }
 
 // RefreshToken refreshes an OpenAI OAuth token using the refresh token.
@@ -305,18 +312,18 @@ func RefreshToken(ctx context.Context, refreshToken string) (*oauth.Token, error
 		newRefreshToken = refreshToken
 	}
 
-	apiKey, err := obtainAPIKey(ctx, tokenResp.IDToken)
-	if err != nil {
-		apiKey = tokenResp.AccessToken
+	accountID := extractAccountID(tokenResp.IDToken)
+	if accountID == "" {
+		accountID = extractAccountID(tokenResp.AccessToken)
 	}
 
 	token := &oauth.Token{
-		AccessToken:  apiKey,
+		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: newRefreshToken,
 		ExpiresIn:    tokenResp.ExpiresIn,
+		AccountID:    accountID,
 	}
 	token.SetExpiresAt()
 
 	return token, nil
 }
-

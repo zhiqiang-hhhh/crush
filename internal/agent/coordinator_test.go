@@ -7,9 +7,9 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
-	"github.com/zhiqiang-hhhh/smith/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zhiqiang-hhhh/smith/internal/config"
 )
 
 // mockSessionAgent is a minimal mock for the SessionAgent interface.
@@ -26,6 +26,7 @@ func (m *mockSessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fan
 func (m *mockSessionAgent) Model() Model                                 { return m.model }
 func (m *mockSessionAgent) SmallModel() Model                            { return m.model }
 func (m *mockSessionAgent) SetModels(large, small Model, summary *Model) {}
+func (m *mockSessionAgent) SetCodexInstructions(enabled bool)            {}
 func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool)           {}
 func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string)          {}
 func (m *mockSessionAgent) Cancel(sessionID string) {

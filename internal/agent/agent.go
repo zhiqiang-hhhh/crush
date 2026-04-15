@@ -124,6 +124,7 @@ type SessionAgentCall struct {
 type SessionAgent interface {
 	Run(context.Context, SessionAgentCall) (*fantasy.AgentResult, error)
 	SetModels(large Model, small Model, summary *Model)
+	SetCodexInstructions(enabled bool)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
 	Cancel(sessionID string)
@@ -154,18 +155,19 @@ type sessionAgent struct {
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
 
-	isSubAgent           bool
-	agentName            string
-	sessions             session.Service
-	messages             message.Service
-	fileTracker          filetracker.Service
-	disableAutoSummarize bool
-	maxTokensToSummarize int64
-	autoTitle            bool
-	isYolo               bool
-	dataDir              string
-	notify               pubsub.Publisher[notify.Notification]
-	onPrepareStep        func(ctx context.Context) error
+	isSubAgent             bool
+	agentName              string
+	sessions               session.Service
+	messages               message.Service
+	fileTracker            filetracker.Service
+	disableAutoSummarize   bool
+	maxTokensToSummarize   int64
+	autoTitle              bool
+	isYolo                 bool
+	needsCodexInstructions *csync.Value[bool]
+	dataDir                string
+	notify                 pubsub.Publisher[notify.Notification]
+	onPrepareStep          func(ctx context.Context) error
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, context.CancelFunc]
@@ -173,23 +175,24 @@ type sessionAgent struct {
 }
 
 type SessionAgentOptions struct {
-	LargeModel           Model
-	SmallModel           Model
-	SummaryModel         *Model
-	SystemPromptPrefix   string
-	SystemPrompt         string
-	IsSubAgent           bool
-	AgentName            string
-	FileTracker          filetracker.Service
-	DisableAutoSummarize bool
-	MaxTokensToSummarize int64
-	AutoTitle            bool
-	IsYolo               bool
-	DataDir              string
-	Sessions             session.Service
-	Messages             message.Service
-	Tools                []fantasy.AgentTool
-	Notify               pubsub.Publisher[notify.Notification]
+	LargeModel             Model
+	SmallModel             Model
+	SummaryModel           *Model
+	SystemPromptPrefix     string
+	SystemPrompt           string
+	IsSubAgent             bool
+	AgentName              string
+	FileTracker            filetracker.Service
+	DisableAutoSummarize   bool
+	MaxTokensToSummarize   int64
+	AutoTitle              bool
+	IsYolo                 bool
+	NeedsCodexInstructions bool
+	DataDir                string
+	Sessions               session.Service
+	Messages               message.Service
+	Tools                  []fantasy.AgentTool
+	Notify                 pubsub.Publisher[notify.Notification]
 
 	// OnPrepareStep is called at the beginning of each agent step,
 	// before sending a request to the LLM. It can be used to refresh
@@ -201,27 +204,28 @@ func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
 	return &sessionAgent{
-		largeModel:           csync.NewValue(opts.LargeModel),
-		smallModel:           csync.NewValue(opts.SmallModel),
-		summaryModel:         opts.SummaryModel,
-		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
-		systemPrompt:         csync.NewValue(opts.SystemPrompt),
-		isSubAgent:           opts.IsSubAgent,
-		agentName:            opts.AgentName,
-		sessions:             opts.Sessions,
-		messages:             opts.Messages,
-		fileTracker:          opts.FileTracker,
-		disableAutoSummarize: opts.DisableAutoSummarize,
-		maxTokensToSummarize: opts.MaxTokensToSummarize,
-		autoTitle:            opts.AutoTitle,
-		tools:                csync.NewSliceFrom(opts.Tools),
-		isYolo:               opts.IsYolo,
-		dataDir:              opts.DataDir,
-		notify:               opts.Notify,
-		onPrepareStep:        opts.OnPrepareStep,
-		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
-		activeRequests:       csync.NewMap[string, context.CancelFunc](),
-		circuitBreaker:       newSummarizeCircuitBreaker(),
+		largeModel:             csync.NewValue(opts.LargeModel),
+		smallModel:             csync.NewValue(opts.SmallModel),
+		summaryModel:           opts.SummaryModel,
+		systemPromptPrefix:     csync.NewValue(opts.SystemPromptPrefix),
+		systemPrompt:           csync.NewValue(opts.SystemPrompt),
+		isSubAgent:             opts.IsSubAgent,
+		agentName:              opts.AgentName,
+		sessions:               opts.Sessions,
+		messages:               opts.Messages,
+		fileTracker:            opts.FileTracker,
+		disableAutoSummarize:   opts.DisableAutoSummarize,
+		maxTokensToSummarize:   opts.MaxTokensToSummarize,
+		autoTitle:              opts.AutoTitle,
+		tools:                  csync.NewSliceFrom(opts.Tools),
+		isYolo:                 opts.IsYolo,
+		needsCodexInstructions: csync.NewValue(opts.NeedsCodexInstructions),
+		dataDir:                opts.DataDir,
+		notify:                 opts.Notify,
+		onPrepareStep:          opts.OnPrepareStep,
+		messageQueue:           csync.NewMap[string, []SessionAgentCall](),
+		activeRequests:         csync.NewMap[string, context.CancelFunc](),
+		circuitBreaker:         newSummarizeCircuitBreaker(),
 	}
 }
 
@@ -295,12 +299,30 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		agentTools[len(agentTools)-1].SetProviderOptions(a.getCacheControlOptions())
 	}
 
-	agent := fantasy.NewAgent(
-		largeModel.Model,
-		fantasy.WithSystemPrompt(systemPrompt),
+	agentOpts := []fantasy.AgentOption{
 		fantasy.WithTools(agentTools...),
 		fantasy.WithUserAgent(userAgent),
-	)
+	}
+	if a.needsCodexInstructions.Get() {
+		// The Codex endpoint requires the system prompt as a top-level
+		// "instructions" field rather than as input messages.
+		instr := systemPrompt
+		if call.ProviderOptions == nil {
+			call.ProviderOptions = fantasy.ProviderOptions{}
+		}
+		if existing, ok := call.ProviderOptions[openai.Name]; ok {
+			if opts, ok := existing.(*openai.ResponsesProviderOptions); ok {
+				opts.Instructions = &instr
+			}
+		} else {
+			call.ProviderOptions[openai.Name] = &openai.ResponsesProviderOptions{
+				Instructions: &instr,
+			}
+		}
+	} else {
+		agentOpts = append(agentOpts, fantasy.WithSystemPrompt(systemPrompt))
+	}
+	agent := fantasy.NewAgent(largeModel.Model, agentOpts...)
 
 	sessionLock := sync.Mutex{}
 	currentSession, err := a.sessions.Get(ctx, call.SessionID)
@@ -381,9 +403,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	var currentAssistant *message.Message
 	var shouldSummarize bool
 	sw := newStreamingWriter(a.messages)
-	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it
+	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it.
+	// The Codex endpoint also rejects max_output_tokens entirely.
 	var maxOutputTokens *int64
-	if call.MaxOutputTokens > 0 {
+	if call.MaxOutputTokens > 0 && !a.needsCodexInstructions.Get() {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
 	result, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
@@ -1612,6 +1635,10 @@ func (a *sessionAgent) SetModels(large Model, small Model, summary *Model) {
 	a.summaryModelMu.Lock()
 	a.summaryModel = summary
 	a.summaryModelMu.Unlock()
+}
+
+func (a *sessionAgent) SetCodexInstructions(enabled bool) {
+	a.needsCodexInstructions.Set(enabled)
 }
 
 // SummaryModel returns the summary model if configured, otherwise falls back

@@ -253,6 +253,9 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 			fmt.Sprintf("providers.%s.api_key", providerID): v.AccessToken,
 			fmt.Sprintf("providers.%s.oauth", providerID):   v,
 		}
+		if providerID == string(catwalk.InferenceProviderOpenAI) {
+			fields[fmt.Sprintf("providers.%s.base_url", providerID)] = openaiauth.CodexBaseURL
+		}
 		var fetchedModels []catwalk.Model
 		if providerID == string(catwalk.InferenceProviderCopilot) {
 			if models, err := copilot.FetchModels(context.Background(), v.AccessToken); err != nil {
@@ -269,6 +272,9 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 		setKeyOrToken = func() {
 			providerConfig.APIKey = v.AccessToken
 			providerConfig.OAuthToken = v
+			if providerID == string(catwalk.InferenceProviderOpenAI) {
+				providerConfig.BaseURL = openaiauth.CodexBaseURL
+			}
 			if len(fetchedModels) > 0 {
 				providerConfig.Models = fetchedModels
 			}
