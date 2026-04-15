@@ -482,6 +482,9 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Messages:             c.messages,
 		Tools:                nil,
 		Notify:               c.notify,
+		OnPrepareStep: func(ctx context.Context) error {
+			return c.refreshTokenForProvider(ctx, large.ModelCfg.Provider)
+		},
 	})
 
 	c.readyWg.Go(func() error {
@@ -1151,6 +1154,18 @@ func (c *coordinator) isUnauthorized(err error) bool {
 	var providerErr *fantasy.ProviderError
 	return (errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusUnauthorized) ||
 		errors.Is(err, hyper.ErrUnauthorized)
+}
+
+func (c *coordinator) refreshTokenForProvider(ctx context.Context, providerID string) error {
+	providerCfg, ok := c.cfg.Config().Providers.Get(providerID)
+	if !ok {
+		return nil
+	}
+	if providerCfg.OAuthToken != nil && providerCfg.OAuthToken.IsExpired() {
+		slog.Debug("Token expired before step, refreshing", "provider", providerCfg.ID)
+		return c.refreshOAuth2Token(ctx, providerCfg)
+	}
+	return nil
 }
 
 func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config.ProviderConfig) error {

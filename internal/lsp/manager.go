@@ -174,12 +174,13 @@ func (s *Manager) startServer(ctx context.Context, name, filepath string, server
 		}
 	}
 
+	if _, err := exec.LookPath(server.Command); err != nil {
+		slog.Debug("LSP server not installed, skipping", "name", name, "command", server.Command)
+		unavailable.Set(name, struct{}{})
+		return
+	}
+
 	if !isUserConfigured {
-		if _, err := exec.LookPath(server.Command); err != nil {
-			slog.Debug("LSP server not installed, skipping", "name", name, "command", server.Command)
-			unavailable.Set(name, struct{}{})
-			return
-		}
 		if skipAutoStartCommands[server.Command] {
 			slog.Debug("LSP command too generic for auto-start, skipping", "name", name, "command", server.Command)
 			return
@@ -211,6 +212,7 @@ func (s *Manager) startServer(ctx context.Context, name, filepath string, server
 	)
 	if err != nil {
 		slog.Error("Failed to create LSP client", "name", name, "error", err)
+		unavailable.Set(name, struct{}{})
 		return
 	}
 	// Only store non-nil clients. If another goroutine raced us,
@@ -243,6 +245,7 @@ func (s *Manager) startServer(ctx context.Context, name, filepath string, server
 		slog.Error("LSP client initialization failed", "name", name, "error", err)
 		_ = client.Close(ctx)
 		s.clients.Del(name)
+		unavailable.Set(name, struct{}{})
 		return
 	}
 

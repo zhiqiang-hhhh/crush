@@ -165,6 +165,7 @@ type sessionAgent struct {
 	isYolo               bool
 	dataDir              string
 	notify               pubsub.Publisher[notify.Notification]
+	onPrepareStep        func(ctx context.Context) error
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, context.CancelFunc]
@@ -189,6 +190,11 @@ type SessionAgentOptions struct {
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
+
+	// OnPrepareStep is called at the beginning of each agent step,
+	// before sending a request to the LLM. It can be used to refresh
+	// expired tokens after long pauses (e.g. waiting for permission).
+	OnPrepareStep func(ctx context.Context) error
 }
 
 func NewSessionAgent(
@@ -212,6 +218,7 @@ func NewSessionAgent(
 		isYolo:               opts.IsYolo,
 		dataDir:              opts.DataDir,
 		notify:               opts.Notify,
+		onPrepareStep:        opts.OnPrepareStep,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, context.CancelFunc](),
 		circuitBreaker:       newSummarizeCircuitBreaker(),
@@ -392,6 +399,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		FrequencyPenalty:  call.FrequencyPenalty,
 		StreamIdleTimeout: streamIdleTimeout,
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
+			if a.onPrepareStep != nil {
+				if err := a.onPrepareStep(callContext); err != nil {
+					return callContext, prepared, err
+				}
+			}
+
 			trace.Emit("agent", "prepare_step", call.SessionID, map[string]any{
 				"message_count": len(options.Messages),
 			})
