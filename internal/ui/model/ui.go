@@ -1455,6 +1455,12 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 	isOnboarding := m.state == uiOnboarding
 
+	if _, isCmd := action.(dialog.ActionCmd); !isCmd {
+		trace.Emit("ui", "command", m.sessionID(), map[string]any{
+			"action": fmt.Sprintf("%T", action),
+		})
+	}
+
 	switch msg := action.(type) {
 	// Generic dialog messages
 	case dialog.ActionClose:
@@ -1673,6 +1679,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 		cfg := m.com.Config()
 		if cfg == nil {
+			trace.Emit("ui", "model_switch_error", m.sessionID(), map[string]any{
+				"error": "configuration not found",
+			})
 			cmds = append(cmds, util.ReportError(errors.New("configuration not found")))
 			break
 		}
@@ -1689,6 +1698,12 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 
 		if !isConfigured() || msg.ReAuthenticate {
+			trace.Emit("ui", "model_switch_auth_required", m.sessionID(), map[string]any{
+				"model":           msg.Model.Model,
+				"provider":        msg.Model.Provider,
+				"model_type":      string(msg.ModelType),
+				"re_authenticate": msg.ReAuthenticate,
+			})
 			m.dialog.CloseDialog(dialog.ModelsID)
 			if cmd := m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType); cmd != nil {
 				cmds = append(cmds, cmd)
@@ -1697,6 +1712,12 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		}
 
 		if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model); err != nil {
+			trace.Emit("ui", "model_switch_error", m.sessionID(), map[string]any{
+				"error":      err.Error(),
+				"model":      msg.Model.Model,
+				"provider":   msg.Model.Provider,
+				"model_type": string(msg.ModelType),
+			})
 			cmds = append(cmds, util.ReportError(err))
 		} else if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
 			// Ensure small model is set is unset.
@@ -1708,8 +1729,20 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 		cmds = append(cmds, func() tea.Msg {
 			if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+				trace.Emit("ui", "model_switch_error", m.sessionID(), map[string]any{
+					"error":      err.Error(),
+					"model":      msg.Model.Model,
+					"provider":   msg.Model.Provider,
+					"model_type": string(msg.ModelType),
+				})
 				return util.ReportError(err)()
 			}
+
+			trace.Emit("ui", "model_switched", m.sessionID(), map[string]any{
+				"model":      msg.Model.Model,
+				"provider":   msg.Model.Provider,
+				"model_type": string(msg.ModelType),
+			})
 
 			modelMsg := fmt.Sprintf("%s model changed to %s", msg.ModelType, msg.Model.Model)
 
@@ -2043,6 +2076,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 
 				value = strings.TrimSpace(value)
+				if strings.HasPrefix(value, "/") {
+					trace.Emit("ui", "slash_command", m.sessionID(), map[string]any{
+						"command": value,
+					})
+				}
 				if value == "exit" || value == "quit" {
 					return m.openQuitDialog()
 				}

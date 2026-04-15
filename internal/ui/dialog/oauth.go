@@ -11,12 +11,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
-	"github.com/zhiqiang-hhhh/smith/internal/config"
-	"github.com/zhiqiang-hhhh/smith/internal/oauth"
-	"github.com/zhiqiang-hhhh/smith/internal/ui/common"
-	"github.com/zhiqiang-hhhh/smith/internal/ui/util"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/pkg/browser"
+	"github.com/zhiqiang-hhhh/smith/internal/config"
+	"github.com/zhiqiang-hhhh/smith/internal/oauth"
+	"github.com/zhiqiang-hhhh/smith/internal/trace"
+	"github.com/zhiqiang-hhhh/smith/internal/ui/common"
+	"github.com/zhiqiang-hhhh/smith/internal/ui/util"
 )
 
 type OAuthProvider interface {
@@ -110,6 +111,10 @@ func newOAuth(
 	)
 	m.keyMap.Close = CloseKey
 
+	trace.Emit("ui", "oauth_started", "", map[string]any{
+		"provider": string(provider.ID),
+	})
+
 	return &m, tea.Batch(m.spinner.Tick, m.oAuthProvider.initiateAuth)
 }
 
@@ -158,6 +163,10 @@ func (m *OAuth) HandleMsg(msg tea.Msg) Action {
 		}
 
 	case ActionInitiateOAuth:
+		trace.Emit("ui", "oauth_device_code_received", "", map[string]any{
+			"provider":         string(m.provider.ID),
+			"verification_url": msg.VerificationURL,
+		})
 		m.deviceCode = msg.DeviceCode
 		m.userCode = msg.UserCode
 		m.expiresIn = msg.ExpiresIn
@@ -167,11 +176,18 @@ func (m *OAuth) HandleMsg(msg tea.Msg) Action {
 		return ActionCmd{m.oAuthProvider.startPolling(msg.DeviceCode, msg.ExpiresIn)}
 
 	case ActionCompleteOAuth:
+		trace.Emit("ui", "oauth_success", "", map[string]any{
+			"provider": string(m.provider.ID),
+		})
 		m.State = OAuthStateSuccess
 		m.token = msg.Token
 		return ActionCmd{m.oAuthProvider.stopPolling}
 
 	case ActionOAuthErrored:
+		trace.Emit("ui", "oauth_error", "", map[string]any{
+			"provider": string(m.provider.ID),
+			"error":    msg.Error.Error(),
+		})
 		m.State = OAuthStateError
 		cmd := tea.Batch(m.oAuthProvider.stopPolling, util.ReportError(msg.Error))
 		return ActionCmd{cmd}
