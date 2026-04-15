@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/trace"
 	"github.com/charmbracelet/crush/internal/ui/common"
 	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/crush/internal/ui/styles"
@@ -558,8 +559,15 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	}
 	commands = append(commands, NewCommandItem(c.com.Styles, "toggle_transparent", transparentLabel, "", ActionToggleTransparentBackground{}))
 
+	traceLabel := "Start Trace"
+	if trace.IsActive() {
+		traceLabel = "Stop Trace"
+	}
+
 	commands = append(commands,
 		NewCommandItem(c.com.Styles, "self_update", "Update Crush", "", ActionSelfUpdate{}),
+		NewCommandItem(c.com.Styles, "show_version", "Show Version", "", ActionShowVersion{}),
+		NewCommandItem(c.com.Styles, "toggle_trace", traceLabel, "", ActionToggleTrace{}),
 		NewCommandItem(c.com.Styles, "quit", "Quit", "ctrl+c", tea.QuitMsg{}),
 	)
 

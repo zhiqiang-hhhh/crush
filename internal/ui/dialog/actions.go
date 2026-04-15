@@ -112,6 +112,10 @@ type (
 	}
 	// ActionOpenShell opens an interactive shell session.
 	ActionOpenShell struct{}
+	// ActionShowVersion displays the current binary version.
+	ActionShowVersion struct{}
+	// ActionToggleTrace toggles trace recording on/off.
+	ActionToggleTrace struct{}
 )
 
 // Messages for API key input dialog.

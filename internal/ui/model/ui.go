@@ -41,6 +41,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/search"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/trace"
 	"github.com/charmbracelet/crush/internal/ui/anim"
 	"github.com/charmbracelet/crush/internal/ui/attachments"
 	"github.com/charmbracelet/crush/internal/ui/chat"
@@ -656,6 +657,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.sendMessage(msg.Content, msg.Attachments...))
 
 	case sessionCreatedMsg:
+		trace.Emit("ui", "session_created", msg.session.ID, nil)
 		if msg.session.ID != "" {
 			m.session = &msg.session
 			m.syncTmuxSessionID()
@@ -1548,6 +1550,17 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionToggleHelp:
 		m.status.ToggleHelp()
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionShowVersion:
+		cmds = append(cmds, util.ReportInfo("Crush "+version.Full()))
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionToggleTrace:
+		if trace.IsActive() {
+			cmds = append(cmds, m.stopTraceAndAnalyze())
+		} else {
+			trace.Start()
+			cmds = append(cmds, util.ReportInfo("Trace started — use /trace again to stop and analyze"))
+		}
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionExternalEditor:
 		if m.isAgentBusy() {
 			cmds = append(cmds, util.ReportWarn("Agent is working, please wait..."))
@@ -2031,6 +2044,19 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				if value == "exit" || value == "quit" {
 					return m.openQuitDialog()
 				}
+				if value == "/version" {
+					cmds = append(cmds, util.ReportInfo("Crush "+version.Full()))
+					return nil
+				}
+				if value == "/trace" {
+					if trace.IsActive() {
+						cmds = append(cmds, m.stopTraceAndAnalyze())
+					} else {
+						trace.Start()
+						cmds = append(cmds, util.ReportInfo("Trace started — use /trace again to stop and analyze"))
+					}
+					return nil
+				}
 
 				attachments := m.attachments.List()
 				m.attachments.Reset()
@@ -2044,6 +2070,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					m.promptHistory.messages = append([]string{value}, m.promptHistory.messages...)
 				}
 
+				trace.Emit("ui", "prompt_submitted", m.sessionID(), map[string]any{
+					"prompt_len": len(value),
+				})
 				return m.sendMessage(value, attachments...)
 			case key.Matches(msg, m.keyMap.Chat.NewSession):
 				if !m.hasSession() {
@@ -3277,6 +3306,14 @@ func (m *UI) hasSession() bool {
 	return m.session != nil && m.session.ID != ""
 }
 
+// sessionID returns the current session ID, or empty string if none.
+func (m *UI) sessionID() string {
+	if m.session != nil {
+		return m.session.ID
+	}
+	return ""
+}
+
 // forkSessionToMuxWindow forks the given session and opens the new session in
 // a new terminal multiplexer window.
 func (m *UI) forkSessionToMuxWindow(sessionID string) tea.Cmd {
@@ -3394,6 +3431,27 @@ func (m *UI) renderEditorView(width int) string {
 // cacheSidebarLogo renders and caches the sidebar logo at the specified width.
 func (m *UI) cacheSidebarLogo(width int) {
 	m.sidebarLogo = renderLogo(m.com.Styles, true, width)
+}
+
+// stopTraceAndAnalyze stops trace recording and sends collected data to the
+// agent for analysis.
+func (m *UI) stopTraceAndAnalyze() tea.Cmd {
+	data := trace.Stop()
+	if data == "" {
+		return util.ReportWarn("No trace data collected")
+	}
+	attachment := message.Attachment{
+		FileName: "trace.jsonl",
+		MimeType: "text/plain",
+		Content:  []byte(data),
+	}
+	return m.sendMessage("Analyze the following trace log captured during this Crush session. "+
+		"The trace records internal events (agent lifecycle, tool calls, errors, retries, summarization, message manipulation). "+
+		"Identify any anomalies or potential bugs, including but not limited to: "+
+		"orphaned tool_use or tool_result (mismatched IDs), excessive retries or errors, "+
+		"unexpected auto-summarization triggers, tool calls that returned errors, "+
+		"messages being truncated or dropped unexpectedly, unusually long durations between events. "+
+		"Be concise. If everything looks normal, say so briefly.", attachment)
 }
 
 // sendMessage sends a message with the given content and attachments.
@@ -3515,6 +3573,7 @@ func (m *UI) cancelAgent() tea.Cmd {
 		// Second ctrl+g press - actually cancel the agent.
 		m.isCanceling = false
 		m.com.Workspace.AgentCancel(m.session.ID)
+		trace.Emit("ui", "agent_canceled", m.session.ID, nil)
 		// Stop the spinning todo indicator.
 		m.todoIsSpinning = false
 		m.renderPills()
